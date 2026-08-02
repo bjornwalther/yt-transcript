@@ -1,0 +1,11 @@
+# Smithery configuration: https://smithery.ai/docs/deployments
+
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    required: []
+    properties: {}
+  commandFunction:
+    |-
+    config => ({ command: 'uvx', args: ['--from', 'git+https://github.com/bjornwalther/yt-transcript', 'yt-transcript-mcp'] })
