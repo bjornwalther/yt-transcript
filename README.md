@@ -4,13 +4,18 @@ Fetch YouTube transcripts as clean markdown, optimised for AI context.
 
 Two interfaces:
 - **CLI** — paste a URL in terminal, get a `.md` file
-- **MCP server** — use it as a tool directly inside Claude Desktop or ChatGPT
+- **MCP server** — use it as a tool directly inside Claude Desktop or ChatGPT Desktop
 
 ---
 
 ## Quick start (MCP server)
 
 This is the recommended way. No files to move around, transcripts land directly in your AI conversation.
+
+### Prerequisites
+
+- Python 3.11+
+- [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
 
 ### Claude Desktop
 
@@ -20,16 +25,35 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "yt-transcript": {
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/yt-transcript", "mcp_server.py"]
+      "command": "/Users/YOUR_USER/.local/bin/uv",
+      "args": ["run", "mcp_server.py"],
+      "cwd": "/path/to/yt-transcript"
     }
   }
 }
 ```
 
-### ChatGPT Desktop
+### ChatGPT Desktop (via Codex)
 
-Add to your Codex MCP config (same format as above). ChatGPT desktop shares MCP configuration with Codex.
+In ChatGPT Desktop MCP settings:
+
+| Field | Value |
+|-------|-------|
+| Name | YouTube Transcript |
+| Command | `/Users/YOUR_USER/.local/bin/uv` |
+| Arguments | `run` and `mcp_server.py` (as separate values) |
+| Working directory | `/path/to/yt-transcript` |
+
+Or in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.yt-transcript]
+command = "/Users/YOUR_USER/.local/bin/uv"
+args = ["run", "mcp_server.py"]
+cwd = "/path/to/yt-transcript"
+```
+
+> **Important:** Use the full path to `uv` (find it with `which uv`). Restart the app after adding the config.
 
 ### After setup
 
@@ -86,6 +110,16 @@ Then just: `ytt https://youtu.be/ABC123`
 
 ---
 
+## Error handling
+
+The MCP server returns clear error messages for:
+- Invalid or unrecognised YouTube URLs
+- Videos with disabled transcripts
+- Videos without subtitles in the requested language
+- Network failures
+
+---
+
 ## Output format
 
 Both CLI and MCP return the same markdown structure:
@@ -97,6 +131,7 @@ source: https://youtube.com/watch?v=ABC123
 channel: Channel Name
 published: 2026-05-15
 language: sv
+segments: 602
 fetched: 2026-05-15
 
 ---
@@ -108,15 +143,6 @@ The actual transcript text...
 
 ---
 
-## Requirements
-
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/) (recommended) or pip
-
-With uv, dependencies are handled automatically. No manual pip install needed.
-
----
-
 ## Folder structure
 
 ```
@@ -124,6 +150,27 @@ yt-transcript/
 ├── yt_transcript.py     ← CLI script
 ├── mcp_server.py        ← MCP server (Claude/ChatGPT)
 ├── pyproject.toml       ← dependencies & entry points
+├── CHANGELOG.md
 ├── README.md
 └── transcripts/         ← CLI output (created on first run)
 ```
+
+---
+
+## Troubleshooting
+
+**MCP server doesn't start:**
+1. Make sure `uv` is installed and use its full path (`which uv`)
+2. Arguments must be separate values, not one string
+3. No trailing spaces or special characters in the command path
+4. Restart the app completely (new session required)
+
+**Transcript is empty or metadata missing:**
+- YouTube sometimes blocks metadata detection. The transcript itself usually still works.
+- Try specifying different languages with `--lang` or `languages` parameter.
+
+---
+
+## Version history
+
+See [CHANGELOG.md](CHANGELOG.md) for details.
