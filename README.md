@@ -1,76 +1,100 @@
 # yt-transcript
 
-A simple tool to save YouTube video transcripts to your local knowledge bank.
-Built for personal use — paste a URL, get a clean markdown file ready to use as context for AI tools like Claude.
+Fetch YouTube transcripts as clean markdown, optimised for AI context.
+
+Two interfaces:
+- **CLI** — paste a URL in terminal, get a `.md` file
+- **MCP server** — use it as a tool directly inside Claude Desktop or ChatGPT
 
 ---
 
-## What it does
+## Quick start (MCP server)
 
-- Fetches the transcript from any YouTube video
-- Saves it as a `.md` file with metadata (title, channel, publish date, language)
-- Organises files by date so your knowledge bank stays easy to navigate
-- Works with Swedish and English by default
+This is the recommended way. No files to move around, transcripts land directly in your AI conversation.
 
----
+### Claude Desktop
 
-## Requirements
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
-- Python 3 — [python.org/downloads](https://python.org/downloads)
-- Two small libraries (install once):
-
-```bash
-pip3 install youtube-transcript-api pytubefix
+```json
+{
+  "mcpServers": {
+    "yt-transcript": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/yt-transcript", "mcp_server.py"]
+    }
+  }
+}
 ```
 
----
+### ChatGPT Desktop
 
-## How to use
+Add to your Codex MCP config (same format as above). ChatGPT desktop shares MCP configuration with Codex.
 
-Open Terminal, navigate to the folder where `yt_transcript.py` lives, and run:
+### After setup
 
-```bash
-python3 yt_transcript.py <youtube_url>
-```
+Restart the app. You now have a `fetch_transcript` tool available. Just say:
 
-**Example:**
-```bash
-python3 yt_transcript.py https://www.youtube.com/watch?v=ABC123
-```
+> "Fetch the transcript from https://youtu.be/ABC123"
 
-Transcripts are saved in a `transcripts/` folder automatically created next to the script.
+The transcript appears directly in the conversation, ready to be summarised, analysed, or used as context.
 
 ---
 
-## Options
+## Quick start (CLI)
+
+For when you want local `.md` files:
+
+```bash
+# One-time setup
+cd /path/to/yt-transcript
+uv sync
+
+# Usage
+uv run yt_transcript.py https://youtu.be/ABC123
+uv run yt_transcript.py https://youtu.be/ABC123 --date 2026-05-15
+```
+
+Or add a shell alias for convenience:
+
+```bash
+alias ytt='uv run /path/to/yt-transcript/yt_transcript.py --out ~/transcripts'
+```
+
+Then just: `ytt https://youtu.be/ABC123`
+
+---
+
+## CLI options
 
 | Flag | What it does | Example |
-|------|-------------|---------|
-| `--date` | Set the publish date manually (recommended — auto-detection is unreliable) | `--date 2026-05-15` |
+|------|-------------|--------|
+| `--date` | Set publish date manually | `--date 2026-05-15` |
 | `--lang` | Preferred transcript language(s) | `--lang sv,en` |
-| `--out` | Change where files are saved | `--out ~/my-notes` |
-| `--no-clean` | Keep raw timestamps in the output | `--no-clean` |
-
-**Recommended command:**
-```bash
-python3 yt_transcript.py https://www.youtube.com/watch?v= ABC123 --date 202X-XX-XX
-```
+| `--out` | Output directory | `--out ~/my-notes` |
+| `--no-clean` | Keep raw timestamps | `--no-clean` |
 
 ---
 
-## Output
+## MCP tool parameters
 
-Each transcript is saved as a markdown file named:
-```
-YYYY-MM-DD_Video-Title.md
-```
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `url` | Yes | YouTube URL (any format) |
+| `languages` | No | Comma-separated codes, default `sv,en` |
+| `include_timestamps` | No | `true` for timestamped lines instead of clean paragraphs |
 
-The file looks like this:
-```
-# NAME
+---
 
-source: https://www.youtube.com/watch?v=ABC123
-channel: NAME
+## Output format
+
+Both CLI and MCP return the same markdown structure:
+
+```markdown
+# Video Title
+
+source: https://youtube.com/watch?v=ABC123
+channel: Channel Name
 published: 2026-05-15
 language: sv
 fetched: 2026-05-15
@@ -79,16 +103,17 @@ fetched: 2026-05-15
 
 ## Transcript
 
-Varmt välkomna till ytterligare ett avsnitt av Snacka om AI...
+The actual transcript text...
 ```
 
 ---
 
-## Tips
+## Requirements
 
-- **Date is important.** AI topics move fast — always use `--date` so you know exactly when the content was published.
-- **Title not detected?** YouTube sometimes blocks auto-detection. The file will be saved with the video ID as name — just rename it in Finder.
-- **Using transcripts with AI?** Paste the contents of a `.md` file directly into Claude or any other AI tool as context. The metadata header helps the AI understand when and where the content is from.
+- Python 3.11+
+- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+
+With uv, dependencies are handled automatically. No manual pip install needed.
 
 ---
 
@@ -96,18 +121,9 @@ Varmt välkomna till ytterligare ett avsnitt av Snacka om AI...
 
 ```
 yt-transcript/
-├── yt_transcript.py     ← the script
-└── transcripts/
-    ├── 2026-05-15_Video-title.md
-    ├── 2026-05-10_Another-video.md
-    └── ...
+├── yt_transcript.py     ← CLI script
+├── mcp_server.py        ← MCP server (Claude/ChatGPT)
+├── pyproject.toml       ← dependencies & entry points
+├── README.md
+└── transcripts/         ← CLI output (created on first run)
 ```
-
----
-
-## Planned improvements
-
-- Auto-summarisation via Claude API
-- Tagging and categories
-- Batch mode (multiple URLs at once)
-- Search across all saved transcripts
