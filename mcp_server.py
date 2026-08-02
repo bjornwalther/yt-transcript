@@ -6,7 +6,6 @@ Or via entry point after install:  yt-transcript-mcp
 """
 
 import asyncio
-import json
 from datetime import datetime
 
 from mcp.server import Server
@@ -64,17 +63,44 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         raise ValueError(f"Unknown tool: {name}")
 
     url = arguments["url"]
-    languages = [l.strip() for l in arguments.get("languages", "sv,en").split(",")]
+    languages = [lang.strip() for lang in arguments.get("languages", "sv,en").split(",")]
     include_timestamps = arguments.get("include_timestamps", False)
 
     # Extract video ID
-    video_id = extract_video_id(url)
+    try:
+        video_id = extract_video_id(url)
+    except ValueError:
+        return [types.TextContent(
+            type="text",
+            text=f"Error: Could not extract a video ID from URL: {url}\n\nMake sure it's a valid YouTube URL (youtube.com, youtu.be, shorts, embed)."
+        )]
 
-    # Fetch metadata (best effort)
-    meta = fetch_metadata(url)
+    # Fetch metadata (best effort, non-blocking)
+    try:
+        meta = await asyncio.to_thread(fetch_metadata, url)
+    except Exception:
+        meta = {"title": "", "channel": "", "published": ""}
 
-    # Fetch transcript
-    segments, language = fetch_transcript(video_id, languages)
+    # Fetch transcript (non-blocking)
+    try:
+        segments, language = await asyncio.to_thread(fetch_transcript, video_id, languages)
+    except Exception as e:
+        error_msg = str(e).lower()
+        if "disabled" in error_msg:
+            return [types.TextContent(
+                type="text",
+                text=f"Error: Transcripts are disabled for this video.\n\nURL: {url}"
+            )]
+        elif "no transcript" in error_msg or "not found" in error_msg:
+            return [types.TextContent(
+                type="text",
+                text=f"Error: No transcript found for languages {languages}.\n\nURL: {url}\nTry different language codes or check if the video has subtitles."
+            )]
+        else:
+            return [types.TextContent(
+                type="text",
+                text=f"Error fetching transcript: {e}\n\nURL: {url}"
+            )]
 
     # Format
     body = raw_text(segments) if include_timestamps else clean_text(segments)
