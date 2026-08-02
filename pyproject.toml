@@ -1,22 +1,16 @@
 [project]
-name = "yt-transcript"
+name = "yt-transcript-mcp"
 version = "1.1.0"
-description = "YouTube transcript MCP server for Claude Desktop and ChatGPT. Fetch transcripts as clean, token-efficient markdown for AI context."
+description = "YouTube transcript MCP server for Claude & ChatGPT. Token-efficient, cached, reliable."
 requires-python = ">=3.11"
 license = "MIT"
-authors = [
-    { name = "Björn Walther", email = "bjorn.walther@wetail.io" },
-]
+authors = [{ name = "Bj\u00f6rn Walther" }]
 readme = "README.md"
-keywords = ["youtube", "transcript", "mcp", "claude", "chatgpt", "ai", "knowledge-base"]
+keywords = ["youtube", "transcript", "mcp", "claude", "chatgpt", "ai"]
 classifiers = [
     "Development Status :: 4 - Beta",
-    "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Topic :: Multimedia :: Video",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -27,14 +21,12 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/bjornwalther/yt-transcript"
 Repository = "https://github.com/bjornwalther/yt-transcript"
-Issues = "https://github.com/bjornwalther/yt-transcript/issues"
 Funding = "https://ko-fi.com/bwalther"
 
 [project.scripts]
-yt-transcript = "yt_transcript:main"
 yt-transcript-mcp = "mcp_server:main"
+yt-transcript = "yt_transcript:main"
 
 [build-system]
 requires = ["hatchling"]
