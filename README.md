@@ -53,7 +53,7 @@ args = ["run", "mcp_server.py"]
 cwd = "/path/to/yt-transcript"
 ```
 
-> **Important:** Use the full path to `uv` (find it with `which uv`). Restart the app after adding the config.
+> **Important:** Use the full path to `uv` (find it with `which uv`). No trailing spaces. Restart the app after config changes (new session required).
 
 ### After setup
 
@@ -62,6 +62,35 @@ Restart the app. You now have a `fetch_transcript` tool available. Just say:
 > "Fetch the transcript from https://youtu.be/ABC123"
 
 The transcript appears directly in the conversation, ready to be summarised, analysed, or used as context.
+
+---
+
+## Metadata handling
+
+Metadata (title, channel, publish date) is fetched using a layered approach:
+
+1. **YouTube oEmbed** (primary) — fast, no API key, reliable for title + channel
+2. **pytubefix** (fallback) — slower, can get publish date but sometimes blocked by YouTube
+3. **Manual overrides** (always win) — specify title, channel, or date directly
+
+The output includes transparency fields:
+
+```
+metadata_source: oembed+pytubefix
+metadata_complete: true
+```
+
+If metadata is incomplete:
+
+```
+metadata_source: oembed
+metadata_complete: false
+missing_metadata: published
+```
+
+You can always override manually:
+
+> "Fetch the transcript from [url]. Title is 'X', channel is 'Y', published 2026-07-30."
 
 ---
 
@@ -77,6 +106,7 @@ uv sync
 # Usage
 uv run yt_transcript.py https://youtu.be/ABC123
 uv run yt_transcript.py https://youtu.be/ABC123 --date 2026-05-15
+uv run yt_transcript.py https://youtu.be/ABC123 --title "My Title" --channel "My Channel"
 ```
 
 Or add a shell alias for convenience:
@@ -93,7 +123,9 @@ Then just: `ytt https://youtu.be/ABC123`
 
 | Flag | What it does | Example |
 |------|-------------|--------|
-| `--date` | Set publish date manually | `--date 2026-05-15` |
+| `--date` | Set publish date (overrides auto-detection) | `--date 2026-05-15` |
+| `--title` | Set title manually | `--title "Episode 42"` |
+| `--channel` | Set channel name manually | `--channel "My Channel"` |
 | `--lang` | Preferred transcript language(s) | `--lang sv,en` |
 | `--out` | Output directory | `--out ~/my-notes` |
 | `--no-clean` | Keep raw timestamps | `--no-clean` |
@@ -107,6 +139,9 @@ Then just: `ytt https://youtu.be/ABC123`
 | `url` | Yes | YouTube URL (any format) |
 | `languages` | No | Comma-separated codes, default `sv,en` |
 | `include_timestamps` | No | `true` for timestamped lines instead of clean paragraphs |
+| `title` | No | Manual title override |
+| `channel` | No | Manual channel name override |
+| `published` | No | Manual publish date (YYYY-MM-DD) |
 
 ---
 
@@ -132,7 +167,9 @@ channel: Channel Name
 published: 2026-05-15
 language: sv
 segments: 602
-fetched: 2026-05-15
+metadata_source: oembed+pytubefix
+metadata_complete: true
+fetched: 2026-08-02
 
 ---
 
@@ -147,7 +184,7 @@ The actual transcript text...
 
 ```
 yt-transcript/
-├── yt_transcript.py     ← CLI script
+├── yt_transcript.py     ← CLI script + shared functions
 ├── mcp_server.py        ← MCP server (Claude/ChatGPT)
 ├── pyproject.toml       ← dependencies & entry points
 ├── CHANGELOG.md
@@ -160,14 +197,20 @@ yt-transcript/
 ## Troubleshooting
 
 **MCP server doesn't start:**
-1. Make sure `uv` is installed and use its full path (`which uv`)
-2. Arguments must be separate values, not one string
+1. Use the full path to `uv` (find it with `which uv` in Terminal)
+2. Arguments must be separate values (`run` and `mcp_server.py`), not one string
 3. No trailing spaces or special characters in the command path
-4. Restart the app completely (new session required)
+4. Restart the app completely (new session required for tool registration)
 
-**Transcript is empty or metadata missing:**
-- YouTube sometimes blocks metadata detection. The transcript itself usually still works.
-- Try specifying different languages with `--lang` or `languages` parameter.
+**Metadata is missing or wrong:**
+- Use manual overrides (`--title`, `--channel`, `--date` in CLI, or the corresponding MCP parameters)
+- Check `metadata_source` in output to see what worked
+- YouTube sometimes blocks pytubefix; oEmbed usually still works for title/channel
+
+**Transcript is empty:**
+- Try different languages with `--lang` or `languages` parameter
+- Some videos have transcripts disabled by the uploader
+- Auto-generated subtitles may not be available for all languages
 
 ---
 

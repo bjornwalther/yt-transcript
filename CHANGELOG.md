@@ -9,13 +9,20 @@ All notable changes to this project will be documented in this file.
 ### Added
 - MCP server (`mcp_server.py`) for use as a tool in Claude Desktop and ChatGPT Desktop
 - `pyproject.toml` with dependencies managed by uv (no manual pip install needed)
-- Proper error handling in MCP server: invalid URLs, disabled transcripts, missing subtitles, and network errors now return clear messages
+- Layered metadata fetching: oEmbed (primary) + pytubefix (fallback)
+- Manual metadata overrides: `title`, `channel`, `published` parameters in both CLI and MCP
+- Metadata transparency in output: `metadata_source`, `metadata_complete`, `missing_metadata`
+- Proper error handling in MCP server: invalid URLs, disabled transcripts, missing subtitles, and network errors return clear messages
+- CLI flags `--title` and `--channel` for manual overrides
 - Hatch build config to include both modules in wheel
 
 ### Changed
-- Sync YouTube API calls wrapped in `asyncio.to_thread()` to avoid blocking the MCP event loop
+- Metadata now uses YouTube oEmbed as primary source (fast, no API key, reliable)
+- pytubefix demoted to fallback (mainly for publish date)
+- pytubefix is now optional (CLI still works without it, just loses publish date auto-detection)
+- Sync YouTube API calls wrapped in `asyncio.to_thread()` in MCP server to avoid blocking event loop
 - MCP dependency pinned to `>=1.0.0,<2` (2.x has breaking API changes)
-- README rewritten with MCP-first setup instructions
+- README rewritten with MCP-first setup, metadata docs, and troubleshooting
 
 ### Fixed
 - Entry point `yt-transcript-mcp` now works correctly (module included in package)
