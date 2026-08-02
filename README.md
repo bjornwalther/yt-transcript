@@ -12,12 +12,48 @@ Works with Claude Desktop, ChatGPT Desktop, Cursor, Windsurf, and any MCP client
 
 ## Why?
 
-When AI browses YouTube for a transcript, it chews through 75,000–150,000 tokens of page chrome to extract 6,000 tokens of text. This tool fetches just the transcript.
+When AI browses YouTube for a transcript, it processes the entire page: navigation, ads, recommendations, scripts. That's 75,000–150,000 tokens of noise to extract maybe 6,000 tokens of actual content.
+
+This tool fetches only the transcript.
 
 | | Tokens | Speed | Repeat queries |
 |-|--------|-------|----------------|
 | AI browses YouTube | 75–150k | 20–90s | Same cost every time |
 | **yt-transcript-mcp** | 6–12k | 1–3s | Instant (cached) |
+
+Once cached, a transcript costs zero tokens to retrieve again. Same content can feed 10 different conversations without a single YouTube request. Less compute, less energy, more output.
+
+---
+
+## Demo
+
+You say:
+
+> Fetch the transcript from https://www.youtube.com/watch?v=dQw4w9WgXcQ
+
+The tool returns:
+
+```markdown
+# Never Gonna Give You Up
+
+source: https://www.youtube.com/watch?v=dQw4w9WgXcQ
+channel: Rick Astley
+published: 2009-10-25
+language: en
+segments: 56
+metadata_source: oembed+pytubefix
+fetched: 2026-08-02
+
+---
+
+## Transcript
+
+We're no strangers to love You know the rules and so do I
+A full commitment's what I'm thinking of You wouldn't get
+this from any other guy...
+```
+
+Clean markdown. Metadata header for context. No HTML, no noise, no wasted tokens.
 
 ---
 
@@ -26,6 +62,8 @@ When AI browses YouTube for a transcript, it chews through 75,000–150,000 toke
 One line. No git clone needed.
 
 ### Claude Desktop
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
@@ -38,7 +76,7 @@ One line. No git clone needed.
 }
 ```
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`, restart.
+Restart Claude Desktop. Done.
 
 ### ChatGPT Desktop
 
@@ -49,9 +87,11 @@ Same config in your Codex MCP settings, or add manually:
 | Command | `uvx` (or full path: `~/.local/bin/uvx`) |
 | Arguments | `--from` `git+https://github.com/bjornwalther/yt-transcript` `yt-transcript-mcp` |
 
+> **Tip:** Find your uvx path with `which uvx`. Arguments must be separate values, not one string.
+
 ### Cursor / Windsurf / VS Code
 
-Paste the same JSON into your MCP server config.
+Paste the same JSON block into your MCP server config.
 
 ### Requires
 
@@ -59,39 +99,21 @@ Paste the same JSON into your MCP server config.
 
 ---
 
-## Usage
-
-> Fetch the transcript from https://youtu.be/C5XvwJCGXpo
-
-```markdown
-# Avsnitt 47: Varför AI förändrar allt
-
-source: https://youtu.be/C5XvwJCGXpo
-channel: Snacka om AI
-published: 2026-05-15
-language: sv
-segments: 602
-metadata_source: oembed+pytubefix
-fetched: 2026-08-02
-
----
-
-## Transcript
-
-Varmt välkomna till ytterligare ett avsnitt...
-```
-
----
-
 ## Features
 
-**Cache.** Transcripts stored in `~/.cache/yt-transcript/` (15–50 KB each). Second request for same video: instant, zero YouTube traffic.
+**Local cache.** Transcripts stored in `~/.cache/yt-transcript/` (15–50 KB per video). A year of heavy use stays under 25 MB. Second fetch: instant, zero network, zero energy.
 
-**Retry.** Rate-limited? Retries 3x with 3s backoff. Output tells you what happened.
+**Retry with backoff.** YouTube rate-limits sometimes. Retries 3x with 3s delays. Output tells you what happened:
 
-**Metadata.** Title and channel via oEmbed (fast, no API key). Publish date via pytubefix fallback. Manual overrides always win.
+```
+note: Retry succeeded (attempt 2/3).
+```
 
-**Transparency.** Every response shows `metadata_source`, cache status, and retry info. No silent failures.
+**Layered metadata.** Title and channel via YouTube oEmbed (fast, no API key). Publish date via pytubefix fallback. Manual overrides always win: pass `title`, `channel`, or `published` directly.
+
+**Transparency.** Every response shows metadata source, cache status, retry info. No guessing, no silent failures.
+
+**Lean code.** Minimal dependencies, ~100 lines for the MCP server. Less code = less to break, less energy to run.
 
 ---
 
@@ -99,8 +121,8 @@ Varmt välkomna till ytterligare ett avsnitt...
 
 | Parameter | Description |
 |-----------|-------------|
-| `url` | YouTube URL (required) |
-| `languages` | Language codes, e.g. `sv,en` |
+| `url` | YouTube URL (required, any format) |
+| `languages` | Language codes, e.g. `sv,en` (default: `sv,en`) |
 | `include_timestamps` | `true` for `[HH:MM:SS]` per line |
 | `title` | Override title |
 | `channel` | Override channel |
@@ -111,27 +133,29 @@ Varmt välkomna till ytterligare ett avsnitt...
 
 ## CLI
 
-Also works as a standalone script:
+Also works standalone, no MCP client needed:
 
 ```bash
 uvx --from git+https://github.com/bjornwalther/yt-transcript yt-transcript https://youtu.be/ABC123
 ```
 
-Or locally: `uv run yt_transcript.py <url> [--date] [--title] [--channel] [--lang] [--out] [--no-clean] [--no-cache]`
+Saves a `.md` file to `./transcripts/`. Flags: `--date`, `--title`, `--channel`, `--lang`, `--out`, `--no-clean`, `--no-cache`.
 
 ---
 
 ## Roadmap
 
-- [ ] Summary mode (condensed output, fewer tokens)
-- [ ] Chapter/topic filtering
-- [ ] Token budget (`max_tokens`)
-- [ ] Batch URLs
+- [ ] Summary mode — condensed output for lower token cost
+- [ ] Chapter/topic filtering — return only relevant sections
+- [ ] Token budget (`max_tokens`) — fit any context window
+- [ ] Batch URLs — multiple videos in one call
 - [ ] MCP registry listing
 
 ---
 
 ## Support
+
+If this saves you time or tokens:
 
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/bwalther)
 [![GitHub Sponsors](https://img.shields.io/badge/Sponsor-ea4aaa?logo=github)](https://github.com/sponsors/bjornwalther)
