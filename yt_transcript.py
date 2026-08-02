@@ -3,8 +3,14 @@
 yt_transcript.py  —  YouTube → local knowledge bank
 
 Fetches YouTube video transcripts and saves them as clean markdown files,
-optimised for use as AI context. Includes layered metadata fetching with
-oEmbed as primary source and pytubefix as fallback.
+optimised for use as AI context. Designed for building a personal knowledge
+base in a token-efficient way.
+
+Features:
+    - Layered metadata: oEmbed (primary) + pytubefix (fallback) + manual overrides
+    - Local cache: previously fetched transcripts served instantly from disk
+    - Retry with backoff: handles YouTube rate limiting transparently
+    - Clean markdown output: optimised for AI consumption
 
 Usage:
     python3 yt_transcript.py <youtube_url> [options]
@@ -16,6 +22,7 @@ Options:
     --lang      Language codes             (default: sv,en)
     --out       Output directory           (default: ./transcripts)
     --no-clean  Keep raw timestamps
+    --no-cache  Bypass cache and fetch fresh from YouTube
 
 Examples:
     python3 yt_transcript.py https://youtu.be/C5XvwJCGXpo
@@ -27,6 +34,7 @@ import argparse
 import json
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -49,14 +57,96 @@ except ImportError:
     YouTube = None
 
 
+# ── Cache ───────────────────────────────────────────────────────────────────────
+#
+# Transcripts are cached locally in ~/.cache/yt-transcript/ as JSON files
+# keyed by video ID. A typical 30-60 min video is 15-50 KB. Even heavy usage
+# (10 videos/week for a year) stays under 25 MB total.
+#
+# Cache enables:
+# - Instant retrieval of previously fetched videos (no YouTube request)
+# - Zero risk of rate limiting on repeated queries
+# - Token-efficient: same transcript can feed multiple AI conversations
+
+CACHE_DIR = Path.home() / ".cache" / "yt-transcript"
+
+
+def get_cache_path(video_id: str) -> Path:
+    """Get the cache file path for a given video ID."""
+    return CACHE_DIR / f"{video_id}.json"
+
+
+def load_from_cache(video_id: str) -> dict | None:
+    """Load a cached transcript if it exists.
+
+    Returns:
+        dict with keys: segments, language, meta, cached_at
+        None if not cached
+    """
+    cache_path = get_cache_path(video_id)
+    if not cache_path.exists():
+        return None
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        return data
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def save_to_cache(video_id: str, segments: list, language: str, meta: dict) -> None:
+    """Save transcript and metadata to local cache."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_data = {
+        "segments": segments,
+        "language": language,
+        "meta": {k: v for k, v in meta.items() if k in ("title", "channel", "published", "source")},
+        "cached_at": datetime.now().strftime("%Y-%m-%d"),
+    }
+    cache_path = get_cache_path(video_id)
+    cache_path.write_text(json.dumps(cache_data, ensure_ascii=False), encoding="utf-8")
+
+
+# ── Retry logic ─────────────────────────────────────────────────────────────────
+#
+# YouTube occasionally rate-limits requests, especially if multiple
+# transcripts are fetched in quick succession. Retry with backoff handles
+# this transparently. Max 3 attempts, 3 seconds between each.
+
+MAX_RETRIES = 3
+RETRY_DELAY_SECONDS = 3
+
+
+def fetch_transcript_with_retry(video_id: str, languages: list) -> tuple:
+    """Fetch transcript with automatic retry on rate limiting.
+
+    Returns:
+        Tuple of (segments, language_code, attempts_needed)
+
+    Raises:
+        TranscriptsDisabled: If transcripts are disabled for the video
+        NoTranscriptFound: If no transcript exists in requested languages
+        Exception: If all retries are exhausted
+    """
+    last_error = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            segments, language = fetch_transcript(video_id, languages)
+            return segments, language, attempt
+        except (TranscriptsDisabled, NoTranscriptFound):
+            # These are not retryable (video genuinely has no transcript)
+            raise
+        except Exception as e:
+            last_error = e
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_DELAY_SECONDS)
+    raise last_error
+
+
 # ── Metadata fetching (layered approach) ─────────────────────────────────────────
 #
 # Layer 1: YouTube oEmbed (no API key, fast, reliable for title + channel)
 # Layer 2: pytubefix (slower, fragile, but can get publish date)
 # Layer 3: Manual overrides (always win)
-#
-# This order ensures we get the best data available without hard dependencies
-# on any single source.
 
 
 def fetch_metadata_oembed(url: str) -> dict:
@@ -64,9 +154,6 @@ def fetch_metadata_oembed(url: str) -> dict:
 
     Fast, no authentication needed, and stable. Does not provide
     publish date (that's what pytubefix or manual override is for).
-
-    Returns:
-        dict with keys: title, channel, published, source
     """
     oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
     try:
@@ -76,7 +163,7 @@ def fetch_metadata_oembed(url: str) -> dict:
         return {
             "title": data.get("title", ""),
             "channel": data.get("author_name", ""),
-            "published": "",  # oEmbed doesn't provide this
+            "published": "",
             "source": "oembed",
         }
     except (URLError, json.JSONDecodeError, OSError):
@@ -87,10 +174,6 @@ def fetch_metadata_pytubefix(url: str) -> dict:
     """Fetch metadata via pytubefix (fallback, mainly for publish date).
 
     Slower and more fragile than oEmbed. YouTube sometimes blocks it.
-    Used primarily to supplement oEmbed with publish date.
-
-    Returns:
-        dict with keys: title, channel, published, source
     """
     if YouTube is None:
         return {"title": "", "channel": "", "published": "", "source": "none"}
@@ -111,11 +194,6 @@ def fetch_metadata(url: str) -> dict:
     """Fetch metadata using layered approach: oEmbed first, pytubefix as fallback.
 
     Returns the best available metadata merged from both sources.
-    oEmbed is preferred for title/channel (faster, more reliable).
-    pytubefix is used to fill in publish date when available.
-
-    Returns:
-        dict with keys: title, channel, published, source, complete
     """
     # Layer 1: oEmbed (primary)
     meta = fetch_metadata_oembed(url)
@@ -126,7 +204,6 @@ def fetch_metadata(url: str) -> dict:
         if fallback["published"]:
             meta["published"] = fallback["published"]
             meta["source"] = f"oembed+pytubefix" if meta["source"] == "oembed" else fallback["source"]
-        # Also fill in title/channel if oEmbed failed
         if not meta["title"] and fallback["title"]:
             meta["title"] = fallback["title"]
             meta["source"] = fallback["source"]
@@ -165,9 +242,7 @@ def extract_video_id(url: str) -> str:
 
 
 def fetch_transcript(video_id: str, languages: list) -> tuple:
-    """Fetch transcript segments for a video.
-
-    Tries the specified languages first, falls back to any available transcript.
+    """Fetch transcript segments for a video (single attempt, no retry).
 
     Args:
         video_id: YouTube video ID
@@ -175,10 +250,6 @@ def fetch_transcript(video_id: str, languages: list) -> tuple:
 
     Returns:
         Tuple of (segments_list, language_code)
-
-    Raises:
-        TranscriptsDisabled: If the video has transcripts disabled
-        NoTranscriptFound: If no transcript is available
     """
     api = YouTubeTranscriptApi()
     transcript_list = api.list(video_id)
@@ -249,8 +320,12 @@ def validate_date(date_str: str) -> str:
         sys.exit(f"Error: --date must be YYYY-MM-DD, got '{date_str}'")
 
 
-def write_md(path: Path, url: str, meta: dict, language: str, body: str) -> None:
+def write_md(path: Path, url: str, meta: dict, language: str, body: str, notes: list = None) -> None:
     """Write transcript to a markdown file with metadata header."""
+    notes_section = ""
+    if notes:
+        notes_section = "\n".join(f"note: {n}" for n in notes) + "\n"
+
     content = f"""# {meta['title'] or 'Untitled'}
 
 source: {url}
@@ -259,7 +334,7 @@ published: {meta['published'] or '\u2014'}
 language: {language}
 metadata_source: {meta.get('source', 'unknown')}
 metadata_complete: {str(meta.get('complete', False)).lower()}
-fetched: {datetime.now().strftime('%Y-%m-%d')}
+{notes_section}fetched: {datetime.now().strftime('%Y-%m-%d')}
 
 ---
 
@@ -287,9 +362,12 @@ def main():
                         help="Output directory (default: ./transcripts)")
     parser.add_argument("--no-clean",   action="store_true",
                         help="Keep raw timestamps instead of clean paragraphs")
+    parser.add_argument("--no-cache",   action="store_true",
+                        help="Bypass cache and fetch fresh from YouTube")
     args = parser.parse_args()
 
     languages = [l.strip() for l in args.lang.split(",")]
+    notes = []
 
     print(f"\n  URL \u2192 {args.url}")
 
@@ -299,11 +377,45 @@ def main():
     except ValueError as e:
         sys.exit(f"Error: {e}")
 
-    # 2. Metadata (layered: oEmbed -> pytubefix -> manual overrides)
-    print("  Fetching metadata \u2026")
-    meta = fetch_metadata(args.url)
+    # 2. Check cache first
+    cached = None if args.no_cache else load_from_cache(video_id)
 
-    # 3. Manual overrides always win
+    if cached:
+        # Serve from cache
+        segments = cached["segments"]
+        language = cached["language"]
+        meta = cached["meta"]
+        meta["complete"] = all(meta.get(k) for k in ("title", "channel", "published"))
+        meta["missing"] = [k for k in ("title", "channel", "published") if not meta.get(k)]
+        notes.append(f"Served from local cache (originally fetched {cached['cached_at']}).")
+        print(f"  Cache   \u2192 HIT (fetched {cached['cached_at']})")
+    else:
+        # 3. Metadata (layered: oEmbed -> pytubefix -> manual overrides)
+        print("  Fetching metadata \u2026")
+        meta = fetch_metadata(args.url)
+
+        # 4. Transcript with retry
+        print(f"  Fetching transcript (langs: {languages}) \u2026")
+        try:
+            segments, language, attempts = fetch_transcript_with_retry(video_id, languages)
+            if attempts > 1:
+                notes.append(f"YouTube blocked initial request. Succeeded on attempt {attempts}/{MAX_RETRIES}.")
+                print(f"  Retry   \u2192 succeeded on attempt {attempts}")
+        except TranscriptsDisabled:
+            sys.exit("Error: Transcripts are disabled for this video.")
+        except NoTranscriptFound:
+            sys.exit(f"Error: No transcript found for languages {languages}.")
+        except Exception as e:
+            sys.exit(
+                f"Error: YouTube is rate-limiting requests from your IP.\n"
+                f"Tried {MAX_RETRIES} times over ~{MAX_RETRIES * RETRY_DELAY_SECONDS} seconds.\n"
+                f"Try again in a few minutes.\n\nDetails: {e}"
+            )
+
+        # 5. Save to cache
+        save_to_cache(video_id, segments, language, meta)
+
+    # 6. Manual overrides always win
     if args.title:
         meta["title"] = args.title
     if args.channel:
@@ -312,41 +424,35 @@ def main():
         meta["published"] = validate_date(args.date)
 
     # Recalculate completeness after overrides
-    missing = [k for k in ("title", "channel", "published") if not meta[k]]
+    missing = [k for k in ("title", "channel", "published") if not meta.get(k)]
     meta["complete"] = len(missing) == 0
     meta["missing"] = missing
     if args.title or args.channel or args.date:
-        meta["source"] = meta["source"] + "+manual" if meta["source"] != "none" else "manual"
+        meta["source"] = meta.get("source", "none") + "+manual" if meta.get("source") != "none" else "manual"
 
     print(f"  Title     \u2192 {meta['title'] or '(not detected)'}")
     print(f"  Channel   \u2192 {meta['channel'] or '(not detected)'}")
     print(f"  Published \u2192 {meta['published'] or '(not detected)'}")
-    print(f"  Source    \u2192 {meta['source']}")
+    print(f"  Source    \u2192 {meta.get('source', 'unknown')}")
+    print(f"  Segments  \u2192 {len(segments)}")
 
-    # 4. Transcript
-    print(f"  Fetching transcript (langs: {languages}) \u2026")
-    try:
-        segments, language = fetch_transcript(video_id, languages)
-    except TranscriptsDisabled:
-        sys.exit("Error: Transcripts are disabled for this video.")
-    except NoTranscriptFound:
-        sys.exit(f"Error: No transcript found for languages {languages}.")
-    print(f"  Language  \u2192 {language}  ({len(segments)} segments)")
-
-    # 5. Format
+    # 7. Format
     body = raw_text(segments) if args.no_clean else clean_text(segments)
 
-    # 6. Save
+    # 8. Save
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    date_prefix = (meta["published"] or datetime.now().strftime("%Y-%m-%d"))[:10]
-    name        = safe_filename(meta["title"]) if meta["title"] else video_id
+    date_prefix = (meta.get("published") or datetime.now().strftime("%Y-%m-%d"))[:10]
+    name        = safe_filename(meta["title"]) if meta.get("title") else video_id
     out_path    = out_dir / f"{date_prefix}_{name}.md"
 
-    write_md(out_path, args.url, meta, language, body)
+    write_md(out_path, args.url, meta, language, body, notes)
 
     print(f"\n  Saved \u2192 {out_path}")
+    if notes:
+        for note in notes:
+            print(f"  Note: {note}")
     if not meta["complete"]:
         print(f"  Note: missing metadata: {', '.join(meta['missing'])}")
     print()

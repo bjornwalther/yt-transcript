@@ -12,17 +12,20 @@ All notable changes to this project will be documented in this file.
 - Layered metadata fetching: oEmbed (primary) + pytubefix (fallback)
 - Manual metadata overrides: `title`, `channel`, `published` parameters in both CLI and MCP
 - Metadata transparency in output: `metadata_source`, `metadata_complete`, `missing_metadata`
-- Proper error handling in MCP server: invalid URLs, disabled transcripts, missing subtitles, and network errors return clear messages
-- CLI flags `--title` and `--channel` for manual overrides
+- Local transcript cache (`~/.cache/yt-transcript/`): instant retrieval of previously fetched videos
+- Retry with backoff: automatic retry (3 attempts, 3s delay) on YouTube rate limiting
+- Transparent status notes in output: cache hits, retry attempts, error details
+- `--no-cache` CLI flag and `bypass_cache` MCP parameter to force fresh fetch
+- `--title` and `--channel` CLI flags for manual overrides
+- Proper error handling: invalid URLs, disabled transcripts, rate limiting, network failures
 - Hatch build config to include both modules in wheel
 
 ### Changed
 - Metadata now uses YouTube oEmbed as primary source (fast, no API key, reliable)
-- pytubefix demoted to fallback (mainly for publish date)
-- pytubefix is now optional (CLI still works without it, just loses publish date auto-detection)
-- Sync YouTube API calls wrapped in `asyncio.to_thread()` in MCP server to avoid blocking event loop
+- pytubefix demoted to optional fallback (mainly for publish date)
+- Sync YouTube API calls wrapped in `asyncio.to_thread()` in MCP server
 - MCP dependency pinned to `>=1.0.0,<2` (2.x has breaking API changes)
-- README rewritten with MCP-first setup, metadata docs, and troubleshooting
+- README rewritten with full documentation
 
 ### Fixed
 - Entry point `yt-transcript-mcp` now works correctly (module included in package)
