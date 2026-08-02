@@ -1,23 +1,66 @@
 # yt-transcript
 
-Fetch YouTube transcripts as clean markdown, optimised for AI context.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![MCP Compatible](https://img.shields.io/badge/MCP-compatible-green.svg)](https://modelcontextprotocol.io)
 
-Built for creating a personal knowledge base from video content in a token-efficient way. Fetch once, use everywhere.
+**YouTube transcripts as clean markdown, optimised for AI context.**
 
-Two interfaces:
-- **CLI** — paste a URL in terminal, get a `.md` file
-- **MCP server** — use it as a tool directly inside Claude Desktop or ChatGPT Desktop
+An MCP server that gives Claude Desktop and ChatGPT Desktop direct access to YouTube transcripts. No browsing, no HTML parsing, no wasted tokens.
 
 ---
 
-## Quick start (MCP server)
+## Why this tool?
 
-This is the recommended way. No files to move around, transcripts land directly in your AI conversation.
+When an AI assistant fetches a YouTube transcript by browsing, it processes the entire page: navigation, ads, recommendations, comments, JavaScript. That's 75,000–150,000 tokens of noise to extract maybe 6,000 tokens of actual content.
+
+This tool cuts straight to the transcript.
+
+| Method | Tokens used | Time | Reliability |
+|--------|------------|------|-------------|
+| AI browses YouTube | 75,000–150,000 | 20–90 sec | Fragile (blocks, CAPTCHAs) |
+| **This MCP** (first fetch) | 6,000–12,000 | 1–3 sec | Retry with backoff |
+| **This MCP** (cached) | 6,000–12,000 | instant | Always works |
+
+**10–20x fewer tokens. 20–60x faster. Cached forever.**
+
+Once fetched, a transcript is stored locally and can feed unlimited AI conversations without a single new request to YouTube.
+
+---
+
+## Demo
+
+```
+You: Fetch the transcript from https://youtu.be/C5XvwJCGXpo
+
+Tool output:
+
+# Avsnitt 47: Varför AI förändrar allt
+
+source: https://youtu.be/C5XvwJCGXpo
+channel: Snacka om AI
+published: 2026-05-15
+language: sv
+segments: 602
+metadata_source: oembed+pytubefix
+metadata_complete: true
+fetched: 2026-08-02
+
+---
+
+## Transcript
+
+Varmt välkomna till ytterligare ett avsnitt...
+```
+
+---
+
+## Setup
 
 ### Prerequisites
 
 - Python 3.11+
-- [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
+- [uv](https://docs.astral.sh/uv/) (recommended): `curl -LsSf https://astral.sh/uv/install.sh | sh`
 
 ### Claude Desktop
 
@@ -27,7 +70,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "yt-transcript": {
-      "command": "/Users/YOUR_USER/.local/bin/uv",
+      "command": "uv",
       "args": ["run", "mcp_server.py"],
       "cwd": "/path/to/yt-transcript"
     }
@@ -35,74 +78,61 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 }
 ```
 
-### ChatGPT Desktop (via Codex)
+> **Tip:** If `uv` isn't found, use the full path (run `which uv` to find it).
 
-In ChatGPT Desktop MCP settings:
+### ChatGPT Desktop
+
+In Settings → MCP, add a new server:
 
 | Field | Value |
 |-------|-------|
 | Name | YouTube Transcript |
-| Command | `/Users/YOUR_USER/.local/bin/uv` |
+| Command | Full path to `uv` (e.g. `~/.local/bin/uv`) |
 | Arguments | `run` and `mcp_server.py` (as separate values) |
-| Working directory | `/path/to/yt-transcript` |
+| Working directory | Path to this repo |
 
-Or in `~/.codex/config.toml`:
+Restart the app. The `fetch_transcript` tool is now available in any conversation.
 
-```toml
-[mcp_servers.yt-transcript]
-command = "/Users/YOUR_USER/.local/bin/uv"
-args = ["run", "mcp_server.py"]
-cwd = "/path/to/yt-transcript"
+### CLI (optional)
+
+For saving transcripts as local `.md` files:
+
+```bash
+cd /path/to/yt-transcript
+uv run yt_transcript.py https://youtu.be/C5XvwJCGXpo
 ```
 
-> **Important:** Use the full path to `uv` (find it with `which uv`). No trailing spaces. Restart the app after config changes (new session required).
+Or with a shell alias:
 
-### After setup
-
-Restart the app. You now have a `fetch_transcript` tool available. Just say:
-
-> "Fetch the transcript from https://youtu.be/ABC123"
-
-The transcript appears directly in the conversation, ready to be summarised, analysed, or used as context.
+```bash
+alias ytt='uv run ~/path/to/yt-transcript/yt_transcript.py --out ~/transcripts'
+```
 
 ---
 
-## How it works
+## Features
 
-### Metadata (layered)
+### Local cache
 
-1. **YouTube oEmbed** (primary) — fast, no API key, reliable for title + channel
-2. **pytubefix** (fallback) — slower, can get publish date but sometimes blocked
-3. **Manual overrides** (always win) — specify title, channel, or date directly
-
-### Cache
-
-Transcripts are cached locally in `~/.cache/yt-transcript/` (keyed by video ID). A typical 30-60 min video is 15-50 KB. Benefits:
-- Instant retrieval on repeat queries (no YouTube request)
-- Zero risk of rate limiting on previously fetched videos
-- Same transcript can feed multiple AI conversations
-
-Use `--no-cache` (CLI) or `bypass_cache: true` (MCP) to force a fresh fetch.
+Transcripts are cached in `~/.cache/yt-transcript/` (15–50 KB per video). Once fetched, repeat queries are instant with zero YouTube requests. A year of heavy use stays under 25 MB.
 
 ### Retry with backoff
 
-If YouTube rate-limits a request, the tool automatically retries up to 3 times with 3-second delays. You'll see a note in the output explaining what happened:
+If YouTube rate-limits a request, the tool retries automatically (3 attempts, 3s delay). The output tells you what happened:
 
 ```
 note: YouTube blocked initial request. Succeeded on attempt 2/3.
 ```
 
-If all retries fail:
+### Layered metadata
 
-```
-Error: YouTube is rate-limiting requests from your IP.
-Tried 3 times over ~9 seconds.
-Try again in a few minutes.
-```
+1. **YouTube oEmbed** (primary) — fast, no API key, reliable for title + channel
+2. **pytubefix** (fallback) — adds publish date when available
+3. **Manual overrides** (always win) — pass `title`, `channel`, or `published` directly
 
 ### Transparency
 
-The output always shows where data came from:
+Every response shows where data came from:
 
 ```
 metadata_source: oembed+pytubefix
@@ -112,135 +142,91 @@ note: Served from local cache (originally fetched 2026-07-30).
 
 ---
 
-## Quick start (CLI)
+## Parameters
 
-For when you want local `.md` files:
-
-```bash
-# One-time setup
-cd /path/to/yt-transcript
-uv sync
-
-# Usage
-uv run yt_transcript.py https://youtu.be/ABC123
-uv run yt_transcript.py https://youtu.be/ABC123 --date 2026-05-15
-uv run yt_transcript.py https://youtu.be/ABC123 --title "My Title" --channel "My Channel"
-```
-
-Or add a shell alias for convenience:
-
-```bash
-alias ytt='uv run /path/to/yt-transcript/yt_transcript.py --out ~/transcripts'
-```
-
-Then just: `ytt https://youtu.be/ABC123`
-
----
-
-## CLI options
-
-| Flag | What it does | Example |
-|------|-------------|--------|
-| `--date` | Set publish date (overrides auto-detection) | `--date 2026-05-15` |
-| `--title` | Set title manually | `--title "Episode 42"` |
-| `--channel` | Set channel name manually | `--channel "My Channel"` |
-| `--lang` | Preferred transcript language(s) | `--lang sv,en` |
-| `--out` | Output directory | `--out ~/my-notes` |
-| `--no-clean` | Keep raw timestamps | `--no-clean` |
-| `--no-cache` | Bypass cache, fetch fresh | `--no-cache` |
-
----
-
-## MCP tool parameters
+### MCP tool
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `url` | Yes | YouTube URL (any format) |
 | `languages` | No | Comma-separated codes, default `sv,en` |
-| `include_timestamps` | No | `true` for timestamped lines instead of clean paragraphs |
+| `include_timestamps` | No | Timestamped lines instead of clean paragraphs |
 | `title` | No | Manual title override |
 | `channel` | No | Manual channel name override |
 | `published` | No | Manual publish date (YYYY-MM-DD) |
-| `bypass_cache` | No | `true` to force fresh fetch from YouTube |
+| `bypass_cache` | No | Force fresh fetch from YouTube |
+
+### CLI flags
+
+| Flag | Description |
+|------|-------------|
+| `--date` | Publish date (YYYY-MM-DD) |
+| `--title` | Title override |
+| `--channel` | Channel override |
+| `--lang` | Language codes (default: `sv,en`) |
+| `--out` | Output directory (default: `./transcripts`) |
+| `--no-clean` | Keep raw timestamps |
+| `--no-cache` | Bypass cache |
 
 ---
 
-## Error handling
+## Roadmap
 
-The MCP server returns clear, actionable error messages for:
-- Invalid or unrecognised YouTube URLs
-- Videos with disabled transcripts
-- Videos without subtitles in the requested language
-- YouTube rate limiting (with retry count and wait time)
-- Network failures
-
----
-
-## Output format
-
-Both CLI and MCP return the same markdown structure:
-
-```markdown
-# Video Title
-
-source: https://youtube.com/watch?v=ABC123
-channel: Channel Name
-published: 2026-05-15
-language: sv
-segments: 602
-metadata_source: oembed+pytubefix
-metadata_complete: true
-note: Served from local cache (originally fetched 2026-08-01).
-fetched: 2026-08-02
+- [ ] Summarisation mode (`summary_only`) — return a condensed version for lower token usage
+- [ ] Chapter extraction — return only specific chapters/sections
+- [ ] Token budget (`max_tokens`) — truncate or summarise to fit a context window
+- [ ] Topic filtering (`focus: "topic"`) — return only segments relevant to a query
+- [ ] Batch mode — fetch multiple URLs in one call
+- [ ] Publish to MCP registry
 
 ---
 
-## Transcript
-
-The actual transcript text...
-```
-
----
-
-## Folder structure
+## Project structure
 
 ```
 yt-transcript/
-├── yt_transcript.py     ← CLI script + shared core functions
 ├── mcp_server.py        ← MCP server (Claude/ChatGPT)
-├── pyproject.toml       ← dependencies & entry points
-├── CHANGELOG.md
+├── yt_transcript.py     ← CLI + shared core logic
+├── pyproject.toml       ← dependencies, metadata, entry points
 ├── README.md
-└── transcripts/         ← CLI output (created on first run)
-
-~/.cache/yt-transcript/  ← local transcript cache (auto-created)
+├── CHANGELOG.md
+├── LICENSE              ← MIT
+└── .github/
+    └── FUNDING.yml      ← sponsor links
 ```
+
+Cache: `~/.cache/yt-transcript/` (auto-created, one JSON file per video)
 
 ---
 
 ## Troubleshooting
 
 **MCP server doesn't start:**
-1. Use the full path to `uv` (find it with `which uv` in Terminal)
-2. Arguments must be separate values (`run` and `mcp_server.py`), not one string
-3. No trailing spaces or special characters in the command path
-4. Restart the app completely (new session required for tool registration)
+- Use the full path to `uv` (find it with `which uv`)
+- Arguments must be separate values (`run` and `mcp_server.py`), not one string
+- No trailing spaces in the command path
+- Restart the app completely after config changes
 
 **YouTube rate limiting:**
-- The tool retries automatically (3 attempts, 3s between each)
-- If it still fails, wait a few minutes and try again
-- Previously fetched videos are served from cache (never rate-limited)
+- Retries happen automatically (3 attempts, 3s between each)
+- Previously fetched videos are always served from cache
+- If it persists, wait a few minutes
 
-**Metadata is missing or wrong:**
-- Use manual overrides (`--title`, `--channel`, `--date` in CLI, or the corresponding MCP parameters)
-- Check `metadata_source` in output to see what worked
-
-**Transcript is empty:**
-- Try different languages with `--lang` or `languages` parameter
-- Some videos have transcripts disabled by the uploader
+**Metadata missing:**
+- Use manual overrides (MCP parameters or CLI flags)
+- Publish date is the most common gap (oEmbed doesn't provide it)
 
 ---
 
-## Version history
+## Support
 
-See [CHANGELOG.md](CHANGELOG.md) for details.
+If this tool saves you time, consider supporting development:
+
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20this%20project-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/bwalther)
+[![GitHub Sponsors](https://img.shields.io/badge/GitHub-Sponsor-ea4aaa?logo=github)](https://github.com/sponsors/bjornwalther)
+
+---
+
+## License
+
+MIT © [Björn Walther](https://github.com/bjornwalther)
