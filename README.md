@@ -3,6 +3,7 @@
 [![MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://python.org)
 [![MCP](https://img.shields.io/badge/MCP-compatible-green.svg)](https://modelcontextprotocol.io)
+[![PyPI](https://img.shields.io/pypi/v/ytfetch-mcp.svg)](https://pypi.org/project/ytfetch-mcp/)
 
 YouTube transcripts as token-efficient AI context. One fetch, cached forever.
 
@@ -19,7 +20,7 @@ This tool fetches only the transcript.
 | | Tokens | Speed | Repeat queries |
 |-|--------|-------|----------------|
 | AI browses YouTube | 75–150k | 20–90s | Same cost every time |
-| **yt-transcript-mcp** | 6–12k | 1–3s | Instant (cached) |
+| **ytfetch-mcp** | 6–12k | 1–3s | Instant (cached) |
 
 Once cached, a transcript costs zero tokens to retrieve again. Same content can feed 10 different conversations without a single YouTube request. Less compute, less energy, more output.
 
@@ -70,7 +71,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
   "mcpServers": {
     "yt-transcript": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/bjornwalther/yt-transcript", "yt-transcript-mcp"]
+      "args": ["ytfetch-mcp"]
     }
   }
 }
@@ -85,9 +86,9 @@ Same config in your Codex MCP settings, or add manually:
 | Field | Value |
 |-------|-------|
 | Command | `uvx` (or full path: `~/.local/bin/uvx`) |
-| Arguments | `--from` `git+https://github.com/bjornwalther/yt-transcript` `yt-transcript-mcp` |
+| Arguments | `ytfetch-mcp` |
 
-> **Tip:** Find your uvx path with `which uvx`. Arguments must be separate values, not one string.
+> **Tip:** Find your uvx path with `which uvx`. Restart the app after config changes.
 
 ### Cursor / Windsurf / VS Code
 
@@ -136,10 +137,11 @@ note: Retry succeeded (attempt 2/3).
 Also works standalone, no MCP client needed:
 
 ```bash
-uvx --from git+https://github.com/bjornwalther/yt-transcript yt-transcript https://youtu.be/ABC123
+uvx ytfetch-mcp  # starts the MCP server
+uv run yt_transcript.py https://youtu.be/ABC123  # CLI mode, saves .md file
 ```
 
-Saves a `.md` file to `./transcripts/`. Flags: `--date`, `--title`, `--channel`, `--lang`, `--out`, `--no-clean`, `--no-cache`.
+CLI flags: `--date`, `--title`, `--channel`, `--lang`, `--out`, `--no-clean`, `--no-cache`.
 
 ---
 
@@ -149,7 +151,7 @@ Saves a `.md` file to `./transcripts/`. Flags: `--date`, `--title`, `--channel`,
 - [ ] Chapter/topic filtering — return only relevant sections
 - [ ] Token budget (`max_tokens`) — fit any context window
 - [ ] Batch URLs — multiple videos in one call
-- [ ] MCP registry listing
+- [ ] Schema.org metadata — replace pytubefix for publish date
 
 ---
 

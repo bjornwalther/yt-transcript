@@ -1,5 +1,5 @@
 [project]
-name = "ytt-mcp"
+name = "ytfetch-mcp"
 version = "1.1.0"
 description = "YouTube transcript MCP server for Claude & ChatGPT. Token-efficient, cached, reliable."
 requires-python = ">=3.11"
@@ -25,7 +25,7 @@ Repository = "https://github.com/bjornwalther/yt-transcript"
 Funding = "https://ko-fi.com/bwalther"
 
 [project.scripts]
-ytt-mcp = "mcp_server:main"
+ytfetch-mcp = "mcp_server:main"
 yt-transcript = "yt_transcript:main"
 
 [build-system]
