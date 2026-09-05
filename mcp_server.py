@@ -24,7 +24,7 @@ from yt_transcript import (
 
 server = Server("yt-transcript")
 
-# \u2500\u2500 Error codes (from CONTRACTS.md section 1) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# -- Error codes (CONTRACTS.md section 1) -------------------------------------
 
 INVALID_URL = "INVALID_URL"
 TRANSCRIPT_NOT_AVAILABLE = "TRANSCRIPT_NOT_AVAILABLE"
@@ -35,7 +35,7 @@ VIDEO_UNAVAILABLE = "VIDEO_UNAVAILABLE"
 PO_TOKEN_REQUIRED = "PO_TOKEN_REQUIRED"
 METADATA_FETCH_FAILED = "METADATA_FETCH_FAILED"
 
-# Complete exception class -> error code mapping (CONTRACTS.md section 1)
+# Complete exception -> error code mapping (CONTRACTS.md section 1)
 _EXCEPTION_CODE_MAP = {
     "TranscriptsDisabled": TRANSCRIPT_NOT_AVAILABLE,
     "NoTranscriptFound": LANGUAGE_NOT_AVAILABLE,
@@ -51,23 +51,28 @@ _EXCEPTION_CODE_MAP = {
     "YouTubeRequestFailed": RATE_LIMITED,
     "YouTubeDataUnparsable": RATE_LIMITED,
     "FailedToCreateConsentCookie": RATE_LIMITED,
+    "CookieError": RATE_LIMITED,
+    "CookieInvalid": RATE_LIMITED,
+    "CookiePathInvalid": RATE_LIMITED,
+    "CouldNotRetrieveTranscript": RATE_LIMITED,
+    "YouTubeTranscriptApiException": RATE_LIMITED,
 }
 
-# \u2500\u2500 Language validation \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# -- Language validation ------------------------------------------------------
 
 _LANG_PATTERN = re.compile(r"^[a-zA-Z0-9-]{1,10}$")
 _MAX_LANGUAGES = 20
 
 
 def _validate_languages(raw: str) -> list[str]:
-    """Parse and validate language codes. Returns safe list, fallback to ['en']."""
+    """Parse and validate language codes. Fallback to ['en']."""
     if not raw or not raw.strip():
         return ["en"]
     codes = [c.strip() for c in raw.split(",") if c.strip()]
     valid = [c for c in codes if _LANG_PATTERN.match(c)][:_MAX_LANGUAGES]
     return valid if valid else ["en"]
 
-# \u2500\u2500 Tool schema (CONTRACTS.md section 5) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# -- Tool schema (CONTRACTS.md section 6) -------------------------------------
 
 TOOL_SCHEMA = {
     "type": "object",
@@ -116,11 +121,10 @@ TOOL_SCHEMA = {
 }
 
 
-# \u2500\u2500 Helpers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# -- Helpers ------------------------------------------------------------------
 
 def _content_hash(segments: list) -> str:
-    """SHA256 of canonical output segments. Recomputable from response when
-    output includes segments. Opaque transcript identity otherwise."""
+    """SHA256 of canonical output segments. Recomputable when output includes segments."""
     canonical = json.dumps(segments, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -139,6 +143,22 @@ def _transcript_duration(segments_raw: list) -> float | None:
     return round(last["start"] + last["duration"], 2)
 
 
+def _build_metadata_warnings(meta_fields: dict, meta_sources: dict) -> list[dict]:
+    """Generate metadata warnings from final state. Called AFTER cache/fetch merge
+    so warnings are identical for cached and fresh responses (CONTRACTS.md section 7)."""
+    warnings = []
+    if all(v == "none" for v in meta_sources.values()):
+        warnings.append({"code": METADATA_FETCH_FAILED,
+                         "message": "All metadata sources failed."})
+    else:
+        failed = [k for k, v in meta_sources.items()
+                  if v == "none" and not meta_fields.get(k)]
+        if failed:
+            warnings.append({"code": METADATA_FETCH_FAILED,
+                             "message": f"Metadata unavailable for: {', '.join(failed)}."})
+    return warnings
+
+
 def _classify_exception(e: Exception) -> tuple[str, str, int]:
     """Map exception to (error_code, message, retry_count).
     Classification by class name (reliable). Message parsing as fallback only."""
@@ -151,7 +171,7 @@ def _classify_exception(e: Exception) -> tuple[str, str, int]:
         is_transient = _is_retryable(e)
         return code, str(e) or cls, retries if is_transient else 0
 
-    # Fallback: parse message for unknown exception types
+    # Fallback: parse message for completely unknown exceptions
     msg = str(e).lower()
     if "disabled" in msg:
         return TRANSCRIPT_NOT_AVAILABLE, str(e), 0
@@ -160,11 +180,11 @@ def _classify_exception(e: Exception) -> tuple[str, str, int]:
     if "po token" in msg:
         return PO_TOKEN_REQUIRED, str(e), 0
     if "blocked" in msg:
-        return YOUTUBE_IP_BLOCKED, str(e), retries
+        return YOUTUBE_IP_BLOCKED, str(e), 0
     if "429" in msg:
         return RATE_LIMITED, str(e), retries
 
-    return RATE_LIMITED, f"Request failed after {attempts} attempts: {e}", retries
+    return RATE_LIMITED, f"Request failed after {attempts} attempts: {e}", 0
 
 
 def _error_response(error_code: str, message: str, video_id: str | None,
@@ -205,7 +225,7 @@ def _build_segments(raw_segments: list) -> list[dict]:
     ]
 
 
-# \u2500\u2500 Tool \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# -- Tool ---------------------------------------------------------------------
 
 @server.list_tools()
 async def list_tools() -> list[types.Tool]:
@@ -236,7 +256,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
     fetch_start = time.monotonic()
 
-    # \u2500\u2500 Parse video ID \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # -- Parse video ID -------------------------------------------------------
     try:
         video_id = extract_video_id(url)
     except ValueError:
@@ -245,18 +265,17 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                                None, url, 0, False, dur, False)
         return [types.TextContent(type="text", text=_format_error(resp, fmt))]
 
-    warnings = []
     retry_count = 0
-    is_generated = False
+    is_generated = None  # None = unknown (CONTRACTS.md: caption_type "unknown")
     fallback_attempted = False
 
-    # \u2500\u2500 Cache \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # -- Cache ----------------------------------------------------------------
     cached = None if bypass else load_from_cache(video_id, languages)
 
     if cached:
         segments_raw = cached["segments"]
         language = cached["language"]
-        is_generated = cached.get("is_generated", False)
+        is_generated = cached.get("is_generated")  # None if missing = unknown
         meta_fields = cached.get("meta", {})
         meta_sources = cached.get("meta_sources", {})
         cache_hit = True
@@ -267,7 +286,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         cache_age = 0
         fetched_at = datetime.now().strftime("%Y-%m-%d")
 
-        # \u2500\u2500 Metadata \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+        # -- Metadata ---------------------------------------------------------
         try:
             meta = await asyncio.to_thread(fetch_metadata, url)
             meta_fields = meta["fields"]
@@ -276,17 +295,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             meta_fields = {"title": "", "channel": "", "published": ""}
             meta_sources = {"title": "none", "channel": "none", "published": "none"}
 
-        if all(v == "none" for v in meta_sources.values()):
-            warnings.append({"code": METADATA_FETCH_FAILED,
-                             "message": "All metadata sources failed."})
-        else:
-            failed = [k for k, v in meta_sources.items()
-                      if v == "none" and not meta_fields.get(k)]
-            if failed:
-                warnings.append({"code": METADATA_FETCH_FAILED,
-                                 "message": f"Metadata unavailable for: {', '.join(failed)}."})
-
-        # \u2500\u2500 Transcript \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+        # -- Transcript -------------------------------------------------------
         try:
             segments_raw, language, is_generated, fallback_attempted, attempts = (
                 await asyncio.to_thread(
@@ -308,25 +317,35 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
     fetch_duration = round(time.monotonic() - fetch_start, 2)
 
-    # \u2500\u2500 Overrides \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # -- Overrides ------------------------------------------------------------
     for k, v in overrides.items():
         if v:
             meta_fields[k] = v
             meta_sources[k] = "manual"
 
-    # \u2500\u2500 Warnings \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # -- Warnings (AFTER cache/fetch merge, CONTRACTS.md section 7) -----------
+    warnings = _build_metadata_warnings(meta_fields, meta_sources)
+
     language_fallback = language not in languages
     if language_fallback:
         fallback_attempted = True
         warnings.append({"code": "LANGUAGE_FALLBACK",
                          "message": f"Requested {','.join(languages)}, got {language}."})
 
-    if is_generated:
+    if is_generated is True:
         warnings.append({"code": "AUTO_GENERATED",
                          "message": ("Auto-generated by YouTube speech recognition. "
                                      "May contain errors; verify against audio before quoting.")})
 
-    # \u2500\u2500 Build response (CONTRACTS.md section 2) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # -- Caption type (CONTRACTS.md: manual | auto-generated | unknown) -------
+    if is_generated is True:
+        caption_type = "auto-generated"
+    elif is_generated is False:
+        caption_type = "manual"
+    else:
+        caption_type = "unknown"
+
+    # -- Build response (CONTRACTS.md section 3) ------------------------------
     segments_out = _build_segments(segments_raw)
     missing = [k for k in ("title", "channel", "published") if not meta_fields.get(k)]
     duration = _transcript_duration(segments_raw)
@@ -342,7 +361,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         "language": language,
         "language_requested": ",".join(languages),
         "language_fallback": language_fallback,
-        "caption_type": "auto-generated" if is_generated else "manual",
+        "caption_type": caption_type,
         "segment_count": len(segments_out),
         "transcript_duration_seconds": duration,
         "metadata_sources": meta_sources or {},
@@ -364,7 +383,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     if output_mode in ("segments", "both"):
         response["segments"] = segments_out
 
-    # \u2500\u2500 Format \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # -- Format ---------------------------------------------------------------
     if fmt == "markdown":
         text_body = raw_text(segments_raw) if timestamps else clean_text(segments_raw)
         notes = []
@@ -384,7 +403,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             f"channel: {meta_fields.get('channel') or '\u2014'}\n"
             f"published: {meta_fields.get('published') or '\u2014'}\n"
             f"language: {language}\n"
-            f"caption_type: {'auto-generated' if is_generated else 'manual'}\n"
+            f"caption_type: {caption_type}\n"
             f"segments: {len(segments_out)}\n"
             f"duration: {duration}s\n"
             f"content_hash: {content_hash}\n"
@@ -400,7 +419,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     )]
 
 
-# \u2500\u2500 Serve \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# -- Serve --------------------------------------------------------------------
 
 async def _serve():
     async with stdio_server() as (read, write):
