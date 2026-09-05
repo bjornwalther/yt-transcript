@@ -4,6 +4,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://python.org)
 [![MCP](https://img.shields.io/badge/MCP-compatible-green.svg)](https://modelcontextprotocol.io)
 [![PyPI](https://img.shields.io/pypi/v/ytfetch-mcp.svg)](https://pypi.org/project/ytfetch-mcp/)
+[![yt-transcript MCP server](https://glama.ai/mcp/servers/bjornwalther/yt-transcript/badges/score.svg)](https://glama.ai/mcp/servers/bjornwalther/yt-transcript)
 
 YouTube transcripts as token-efficient AI context. One fetch, cached forever.
 
