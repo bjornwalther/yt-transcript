@@ -7,22 +7,24 @@
 
 YouTube transcripts as token-efficient AI context. One fetch, cached forever.
 
+Agent-first: returns structured JSON by default. Zero dependencies on yt-dlp, ffmpeg, or API keys.
+
 Works with Claude Desktop, ChatGPT Desktop, Cursor, Windsurf, and any MCP client.
 
 ---
 
 ## Why?
 
-When AI browses YouTube for a transcript, it processes the entire page: navigation, ads, recommendations, scripts. That's 75,000–150,000 tokens of noise to extract maybe 6,000 tokens of actual content.
+When AI browses YouTube for a transcript, it processes the entire page: navigation, ads, recommendations, scripts. That's 75,000-150,000 tokens of noise to extract maybe 6,000 tokens of actual content.
 
 This tool fetches only the transcript.
 
 | | Tokens | Speed | Repeat queries |
 |-|--------|-------|----------------|
-| AI browses YouTube | 75–150k | 20–90s | Same cost every time |
-| **ytfetch-mcp** | 6–12k | 1–3s | Instant (cached) |
+| AI browses YouTube | 75-150k | 20-90s | Same cost every time |
+| **ytfetch-mcp** | 6-12k | 1-3s | Instant (cached) |
 
-Once cached, a transcript costs zero tokens to retrieve again. Same content can feed 10 different conversations without a single YouTube request. Less compute, less energy, more output.
+~50 KB per video in cache. A year of daily use stays under 120 MB.
 
 ---
 
@@ -32,29 +34,30 @@ You say:
 
 > Fetch the transcript from https://www.youtube.com/watch?v=dQw4w9WgXcQ
 
-The tool returns:
+Default response (compact JSON, segments only):
 
-```markdown
-# Never Gonna Give You Up
-
-source: https://www.youtube.com/watch?v=dQw4w9WgXcQ
-channel: Rick Astley
-published: 2009-10-25
-language: en
-segments: 56
-metadata_source: oembed+pytubefix
-fetched: 2026-08-02
-
----
-
-## Transcript
-
-We're no strangers to love You know the rules and so do I
-A full commitment's what I'm thinking of You wouldn't get
-this from any other guy...
+```json
+{
+  "is_error": false,
+  "video_id": "dQw4w9WgXcQ",
+  "title": "Never Gonna Give You Up",
+  "channel": "Rick Astley",
+  "published": "2009-10-25",
+  "language": "en",
+  "caption_type": "manual",
+  "segment_count": 56,
+  "transcript_duration_seconds": 213.5,
+  "content_hash": "a1b2c3...",
+  "cache_hit": false,
+  "warnings": [],
+  "segments": [
+    {"text": "We're no strangers to love", "start": 18.0, "end": 21.4},
+    {"text": "You know the rules and so do I", "start": 21.4, "end": 24.8}
+  ]
+}
 ```
 
-Clean markdown. Metadata header for context. No HTML, no noise, no wasted tokens.
+Structured, machine-readable, one transcript representation. No HTML, no noise, no wasted tokens.
 
 ---
 
@@ -100,35 +103,78 @@ Paste the same JSON block into your MCP server config.
 
 ---
 
-## Features
+## Parameters
 
-**Local cache.** Transcripts stored in `~/.cache/yt-transcript/` (15–50 KB per video). A year of heavy use stays under 25 MB. Second fetch: instant, zero network, zero energy.
-
-**Retry with backoff.** YouTube rate-limits sometimes. Retries 3x with 3s delays. Output tells you what happened:
-
-```
-note: Retry succeeded (attempt 2/3).
-```
-
-**Layered metadata.** Title and channel via YouTube oEmbed (fast, no API key). Publish date via pytubefix fallback. Manual overrides always win: pass `title`, `channel`, or `published` directly.
-
-**Transparency.** Every response shows metadata source, cache status, retry info. No guessing, no silent failures.
-
-**Lean code.** Minimal dependencies, ~100 lines for the MCP server. Less code = less to break, less energy to run.
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `url` | YouTube URL (required, any format) | |
+| `languages` | Language codes in priority order | `sv,en` |
+| `output` | `segments`, `text`, or `both` | `segments` |
+| `format` | `json` or `markdown` | `json` |
+| `include_timestamps` | `true` for `[HH:MM:SS]` per line in text output | `false` |
+| `title` | Override title | |
+| `channel` | Override channel | |
+| `published` | Override date (YYYY-MM-DD) | |
+| `bypass_cache` | `true` to force fresh fetch | `false` |
 
 ---
 
-## Parameters
+## Output modes
 
-| Parameter | Description |
-|-----------|-------------|
-| `url` | YouTube URL (required, any format) |
-| `languages` | Language codes, e.g. `sv,en` (default: `sv,en`) |
-| `include_timestamps` | `true` for `[HH:MM:SS]` per line |
-| `title` | Override title |
-| `channel` | Override channel |
-| `published` | Override date (YYYY-MM-DD) |
-| `bypass_cache` | `true` to force fresh fetch |
+| `output` | What you get |
+|----------|-------------|
+| `segments` (default) | Array of `{text, start, end}` for structured consumption |
+| `text` | Single readable string (clean or timestamped) |
+| `both` | Both representations |
+
+Markdown format (`format=markdown`) always renders readable text regardless of output mode.
+
+---
+
+## Error handling
+
+Every error returns a structured response with a machine-readable code and a `retryable` flag so agents can branch automatically:
+
+```json
+{
+  "is_error": true,
+  "error_code": "VIDEO_UNAVAILABLE",
+  "error_message": "Video is unavailable, private, or removed.",
+  "retryable": false,
+  "retry_count": 0
+}
+```
+
+| Error code | Meaning | Retryable |
+|-----------|---------|----------|
+| `INVALID_URL` | Not a YouTube URL or malformed video ID | No |
+| `TRANSCRIPT_NOT_AVAILABLE` | Transcripts disabled for this video | No |
+| `LANGUAGE_NOT_AVAILABLE` | No transcript in requested languages | No |
+| `VIDEO_UNAVAILABLE` | Video unavailable, private, age-restricted, or unplayable | No |
+| `YOUTUBE_IP_BLOCKED` | YouTube is blocking your IP | No |
+| `PO_TOKEN_REQUIRED` | Video requires Proof-of-Origin token | No |
+| `RATE_LIMITED` | YouTube rate limit (429) | Yes |
+
+---
+
+## Provenance
+
+Every response includes provenance so you know exactly where the data comes from:
+
+- **`caption_type`**: `manual`, `auto-generated`, or `unknown`
+- **`metadata_sources`**: per-field tracking (`{"title": "oembed", "published": "pytubefix"}`)
+- **`content_hash`**: SHA256 of the segments array for reproducibility
+- **`warnings`**: `AUTO_GENERATED` (speech recognition, may contain errors), `LANGUAGE_FALLBACK` (got a different language than requested), `METADATA_FETCH_FAILED` (some metadata unavailable)
+
+---
+
+## Cache
+
+Transcripts cached locally in `~/.cache/yt-transcript/`. Keyed by video ID + language preference. Second fetch: instant, zero network.
+
+- Cache entries validated on load (version, types, segments, metadata)
+- Legacy or corrupted entries silently skipped
+- Cache write failures never block transcript delivery
 
 ---
 
@@ -147,11 +193,13 @@ CLI flags: `--date`, `--title`, `--channel`, `--lang`, `--out`, `--no-clean`, `-
 
 ## Roadmap
 
-- [ ] Summary mode — condensed output for lower token cost
-- [ ] Chapter/topic filtering — return only relevant sections
-- [ ] Token budget (`max_tokens`) — fit any context window
-- [ ] Batch URLs — multiple videos in one call
-- [ ] Schema.org metadata — replace pytubefix for publish date
+- [ ] Summary mode -- condensed output for lower token cost
+- [ ] Token budget (`max_tokens`) -- fit any context window
+- [ ] Batch URLs -- multiple videos in one call
+- [ ] Chapter/topic filtering -- return only relevant sections
+- [ ] Remote HTTP transport -- expose as streamable HTTP MCP server
+- [ ] Schema.org metadata -- replace pytubefix for publish date
+- [ ] MCP outputSchema / structured content
 
 ---
 
@@ -164,4 +212,4 @@ If this saves you time or tokens:
 
 ---
 
-MIT © [Björn Walther](https://github.com/bjornwalther)
+MIT \u00a9 [Bj\u00f6rn Walther](https://github.com/bjornwalther)
