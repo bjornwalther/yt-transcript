@@ -12,17 +12,22 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import NoTranscriptFound, TranscriptsDisabled
 
 try:
+    from youtube_transcript_api._errors import PoTokenRequired
+except ImportError:
+    PoTokenRequired = None  # older versions lack this
+
+try:
     from pytubefix import YouTube
 except ImportError:
     YouTube = None  # optional: only used for publish date fallback
 
-# ── Config ──────────────────────────────────────────────────────────────────────
+# ── Config ──────────────────────────────────────────────────────────────────────────────
 
 CACHE_DIR = Path.home() / ".cache" / "yt-transcript"
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 3
 
-# ── URL parsing ─────────────────────────────────────────────────────────────────
+# ── URL parsing ─────────────────────────────────────────────────────────────────────────
 
 def extract_video_id(url: str) -> str:
     parsed = urlparse(url)
@@ -36,95 +41,155 @@ def extract_video_id(url: str) -> str:
         return m.group(2)
     raise ValueError(f"Cannot extract video ID from: {url}")
 
-# ── Cache ───────────────────────────────────────────────────────────────────────
+# ── Cache ───────────────────────────────────────────────────────────────────────────────
 
-def load_from_cache(video_id: str) -> dict | None:
+def load_from_cache(video_id: str, languages: list | None = None) -> dict | None:
+    """Load cached transcript. If languages is provided, only return cache hit
+    when the cached language matches one of the requested languages."""
     path = CACHE_DIR / f"{video_id}.json"
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
+    if languages and data.get("language") not in languages:
+        return None
+    return data
 
-def save_to_cache(video_id: str, segments: list, language: str, meta: dict) -> None:
+def save_to_cache(video_id: str, segments: list, language: str,
+                  meta: dict, is_generated: bool = False) -> None:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     data = {
         "segments": segments,
         "language": language,
-        "meta": {k: meta.get(k, "") for k in ("title", "channel", "published", "source")},
+        "is_generated": is_generated,
+        "meta": meta.get("fields", meta),
+        "meta_sources": meta.get("sources", {}),
         "cached_at": datetime.now().strftime("%Y-%m-%d"),
     }
     (CACHE_DIR / f"{video_id}.json").write_text(
         json.dumps(data, ensure_ascii=False), encoding="utf-8"
     )
 
-# ── Metadata (layered: oEmbed → pytubefix → manual) ────────────────────────────
+# ── Metadata (layered: oEmbed → pytubefix → manual) ────────────────────────────────
 
 def _fetch_oembed(url: str) -> dict:
     try:
         req = Request(f"https://www.youtube.com/oembed?url={url}&format=json",
-                      headers={"User-Agent": "yt-transcript/1.1"})
+                      headers={"User-Agent": "yt-transcript/1.2"})
         with urlopen(req, timeout=10) as r:
             d = json.loads(r.read().decode())
         return {"title": d.get("title", ""), "channel": d.get("author_name", ""),
-                "published": "", "source": "oembed"}
+                "published": ""}
     except (URLError, json.JSONDecodeError, OSError):
-        return {"title": "", "channel": "", "published": "", "source": "none"}
+        return {"title": "", "channel": "", "published": ""}
 
 def _fetch_pytubefix(url: str) -> dict:
     if YouTube is None:
-        return {"title": "", "channel": "", "published": "", "source": "none"}
+        return {"title": "", "channel": "", "published": ""}
     try:
         yt = YouTube(url)
         pub = yt.publish_date
         return {"title": yt.title or "", "channel": yt.author or "",
-                "published": pub.strftime("%Y-%m-%d") if pub else "", "source": "pytubefix"}
+                "published": pub.strftime("%Y-%m-%d") if pub else ""}
     except Exception:
-        return {"title": "", "channel": "", "published": "", "source": "none"}
+        return {"title": "", "channel": "", "published": ""}
 
 def fetch_metadata(url: str) -> dict:
-    meta = _fetch_oembed(url)
-    if not meta["published"]:
-        fb = _fetch_pytubefix(url)
-        if fb["published"]:
-            meta["published"] = fb["published"]
-            meta["source"] = "oembed+pytubefix" if meta["source"] == "oembed" else fb["source"]
-        if not meta["title"] and fb["title"]:
-            meta["title"] = fb["title"]
-        if not meta["channel"] and fb["channel"]:
-            meta["channel"] = fb["channel"]
-    meta["missing"] = [k for k in ("title", "channel", "published") if not meta[k]]
-    meta["complete"] = len(meta["missing"]) == 0
-    return meta
+    """Fetch metadata with per-field source tracking.
 
-# ── Transcript ──────────────────────────────────────────────────────────────────
+    Returns dict with 'fields', 'sources', 'missing', 'complete' keys.
+    """
+    oembed = _fetch_oembed(url)
+    ptf = _fetch_pytubefix(url)
+
+    fields = {}
+    sources = {}
+
+    # Title: prefer oembed, fallback pytubefix
+    if oembed["title"]:
+        fields["title"] = oembed["title"]
+        sources["title"] = "oembed"
+    elif ptf["title"]:
+        fields["title"] = ptf["title"]
+        sources["title"] = "pytubefix"
+    else:
+        fields["title"] = ""
+        sources["title"] = "none"
+
+    # Channel: prefer oembed, fallback pytubefix
+    if oembed["channel"]:
+        fields["channel"] = oembed["channel"]
+        sources["channel"] = "oembed"
+    elif ptf["channel"]:
+        fields["channel"] = ptf["channel"]
+        sources["channel"] = "pytubefix"
+    else:
+        fields["channel"] = ""
+        sources["channel"] = "none"
+
+    # Published: prefer pytubefix (oembed doesn't provide it)
+    if ptf["published"]:
+        fields["published"] = ptf["published"]
+        sources["published"] = "pytubefix"
+    else:
+        fields["published"] = ""
+        sources["published"] = "none"
+
+    missing = [k for k in ("title", "channel", "published") if not fields[k]]
+    return {
+        "fields": fields,
+        "sources": sources,
+        "missing": missing,
+        "complete": len(missing) == 0,
+    }
+
+# ── Transcript ────────────────────────────────────────────────────────────────────────
 
 def fetch_transcript(video_id: str, languages: list) -> tuple:
+    """Fetch transcript, falling back to any available language if needed.
+
+    Returns (segments, language_code, is_generated, fallback_used).
+    """
     api = YouTubeTranscriptApi()
     tl = api.list(video_id)
+    fallback_used = False
     try:
         t = tl.find_transcript(languages)
     except NoTranscriptFound:
         t = tl.find_transcript([x.language_code for x in tl])
+        fallback_used = True
     fetched = t.fetch()
-    return [{"text": s.text, "start": s.start, "duration": s.duration} for s in fetched], t.language_code
+    segments = [{"text": s.text, "start": s.start, "duration": s.duration} for s in fetched]
+    return segments, t.language_code, t.is_generated, fallback_used
 
 def fetch_transcript_with_retry(video_id: str, languages: list) -> tuple:
+    """Fetch transcript with retries on transient errors.
+
+    Returns (segments, language_code, is_generated, fallback_used, attempts).
+    Non-retryable errors (TranscriptsDisabled, NoTranscriptFound, PoTokenRequired)
+    are raised immediately.
+    """
     last_err = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            segs, lang = fetch_transcript(video_id, languages)
-            return segs, lang, attempt
+            segs, lang, is_gen, fallback = fetch_transcript(video_id, languages)
+            return segs, lang, is_gen, fallback, attempt
         except (TranscriptsDisabled, NoTranscriptFound):
             raise
         except Exception as e:
+            # Don't retry PO token errors
+            if PoTokenRequired and isinstance(e, PoTokenRequired):
+                raise
+            if type(e).__name__ == "PoTokenRequired":
+                raise
             last_err = e
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_DELAY_SECONDS)
     raise last_err
 
-# ── Formatting ──────────────────────────────────────────────────────────────────
+# ── Formatting ────────────────────────────────────────────────────────────────────────
 
 def clean_text(segments: list) -> str:
     lines = []
@@ -140,28 +205,29 @@ def raw_text(segments: list) -> str:
         for s in segments
     )
 
-# ── File output ─────────────────────────────────────────────────────────────────
+# ── File output ───────────────────────────────────────────────────────────────────────
 
 def safe_filename(text: str, max_len: int = 80) -> str:
     return re.sub(r"\s+", "_", re.sub(r'[<>:"/\\|?*]', "", text.strip()))[:max_len]
 
 def write_md(path: Path, url: str, meta: dict, language: str, body: str, notes: list = None) -> None:
+    fields = meta.get("fields", meta)
+    missing = meta.get("missing", [k for k in ("title", "channel", "published") if not fields.get(k)])
     notes_str = "".join(f"note: {n}\n" for n in (notes or []))
-    missing_str = f"missing: {', '.join(meta['missing'])}\n" if meta.get("missing") else ""
+    missing_str = f"missing: {', '.join(missing)}\n" if missing else ""
     content = (
-        f"# {meta.get('title') or 'Untitled'}\n\n"
-        f"source: {url}\nchannel: {meta.get('channel') or '\u2014'}\n"
-        f"published: {meta.get('published') or '\u2014'}\nlanguage: {language}\n"
-        f"metadata_source: {meta.get('source', 'unknown')}\n"
+        f"# {fields.get('title') or 'Untitled'}\n\n"
+        f"source: {url}\nchannel: {fields.get('channel') or '\u2014'}\n"
+        f"published: {fields.get('published') or '\u2014'}\nlanguage: {language}\n"
         f"{missing_str}{notes_str}"
         f"fetched: {datetime.now().strftime('%Y-%m-%d')}\n\n---\n\n## Transcript\n\n{body}\n"
     )
     path.write_text(content, encoding="utf-8")
 
-# ── CLI ─────────────────────────────────────────────────────────────────────────
+# ── CLI ─────────────────────────────────────────────────────────────────────────────────
 
 def main():
-    p = argparse.ArgumentParser(description="YouTube transcript → markdown")
+    p = argparse.ArgumentParser(description="YouTube transcript \u2192 markdown")
     p.add_argument("url", help="YouTube video URL")
     p.add_argument("--date", help="Publish date YYYY-MM-DD")
     p.add_argument("--title", help="Title override")
@@ -180,49 +246,58 @@ def main():
     except ValueError as e:
         sys.exit(f"Error: {e}")
 
-    cached = None if args.no_cache else load_from_cache(video_id)
+    cached = None if args.no_cache else load_from_cache(video_id, languages)
 
     if cached:
-        segments, language, meta = cached["segments"], cached["language"], cached["meta"]
-        meta["missing"] = [k for k in ("title", "channel", "published") if not meta.get(k)]
+        segments = cached["segments"]
+        language = cached["language"]
+        meta = {"fields": cached.get("meta", {}), "sources": cached.get("meta_sources", {}),
+                "missing": [], "complete": True}
+        meta["missing"] = [k for k in ("title", "channel", "published") if not meta["fields"].get(k)]
         meta["complete"] = len(meta["missing"]) == 0
         notes.append(f"From cache (fetched {cached['cached_at']}).")
         print(f"  Cache HIT ({cached['cached_at']})")
     else:
         meta = fetch_metadata(args.url)
         try:
-            segments, language, attempts = fetch_transcript_with_retry(video_id, languages)
+            segments, language, is_gen, fallback, attempts = fetch_transcript_with_retry(video_id, languages)
             if attempts > 1:
                 notes.append(f"Retry succeeded (attempt {attempts}/{MAX_RETRIES}).")
+            if fallback:
+                notes.append(f"Language fallback: requested {languages}, got {language}.")
         except TranscriptsDisabled:
             sys.exit("Error: Transcripts disabled for this video.")
         except NoTranscriptFound:
             sys.exit(f"Error: No transcript for languages {languages}.")
         except Exception as e:
+            if type(e).__name__ == "PoTokenRequired" or (PoTokenRequired and isinstance(e, PoTokenRequired)):
+                sys.exit("Error: Video requires PO token. Cannot fetch without JS runtime.")
             sys.exit(f"Error: Rate-limited. Tried {MAX_RETRIES}x. Wait and retry.\n{e}")
-        save_to_cache(video_id, segments, language, meta)
+        save_to_cache(video_id, segments, language, meta, is_gen)
+
+    fields = meta.get("fields", meta)
 
     # Manual overrides
-    if args.title: meta["title"] = args.title
-    if args.channel: meta["channel"] = args.channel
+    if args.title:
+        fields["title"] = args.title
+    if args.channel:
+        fields["channel"] = args.channel
     if args.date:
         try:
             datetime.strptime(args.date, "%Y-%m-%d")
-            meta["published"] = args.date
+            fields["published"] = args.date
         except ValueError:
             sys.exit(f"Error: --date must be YYYY-MM-DD, got '{args.date}'")
-    if args.title or args.channel or args.date:
-        meta["source"] = meta.get("source", "none") + "+manual"
 
-    meta["missing"] = [k for k in ("title", "channel", "published") if not meta.get(k)]
+    meta["missing"] = [k for k in ("title", "channel", "published") if not fields.get(k)]
     meta["complete"] = len(meta["missing"]) == 0
 
     body = raw_text(segments) if args.no_clean else clean_text(segments)
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    prefix = (meta.get("published") or datetime.now().strftime("%Y-%m-%d"))[:10]
-    name = safe_filename(meta["title"]) if meta.get("title") else video_id
+    prefix = (fields.get("published") or datetime.now().strftime("%Y-%m-%d"))[:10]
+    name = safe_filename(fields["title"]) if fields.get("title") else video_id
     out_path = out_dir / f"{prefix}_{name}.md"
 
     write_md(out_path, args.url, meta, language, body, notes)
