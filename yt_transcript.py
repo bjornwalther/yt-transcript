@@ -17,7 +17,9 @@ for _name in ("PoTokenRequired", "VideoUnavailable", "VideoUnplayable",
               "InvalidVideoId", "AgeRestricted", "IpBlocked", "RequestBlocked",
               "NotTranslatable", "TranslationLanguageNotAvailable",
               "YouTubeRequestFailed", "YouTubeDataUnparsable",
-              "FailedToCreateConsentCookie"):
+              "FailedToCreateConsentCookie", "CookieError", "CookieInvalid",
+              "CookiePathInvalid", "CouldNotRetrieveTranscript",
+              "YouTubeTranscriptApiException"):
     try:
         _mod = __import__("youtube_transcript_api._errors", fromlist=[_name])
         _OPTIONAL_ERRORS[_name] = getattr(_mod, _name)
@@ -29,38 +31,61 @@ try:
 except ImportError:
     YouTube = None
 
-# \u2500\u2500 Config \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# -- Config -------------------------------------------------------------------
 
 CACHE_DIR = Path.home() / ".cache" / "yt-transcript"
 CACHE_VERSION = 2
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 3
 
-# Allowlist: only these are worth retrying (transient network/rate issues).
+# Allowlist: ONLY these are retried. Everything else raises immediately.
 _RETRYABLE_CLASS_NAMES = {"YouTubeRequestFailed"}
+
+# YouTube hosts we accept (CONTRACTS.md section 2)
+_YOUTUBE_HOSTS = {
+    "youtube.com", "www.youtube.com", "m.youtube.com",
+    "youtu.be", "www.youtu.be", "music.youtube.com",
+}
+
+_VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
 def _is_retryable(exc: Exception) -> bool:
     """Return True only for known transient errors."""
     return type(exc).__name__ in _RETRYABLE_CLASS_NAMES
 
-# \u2500\u2500 URL parsing \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# -- URL parsing --------------------------------------------------------------
 
 def extract_video_id(url: str) -> str:
-    parsed = urlparse(url)
-    if parsed.netloc in ("youtu.be", "www.youtu.be"):
-        vid = parsed.path.lstrip("/").split("/")[0]
-        if vid:
-            return vid
-    qs = parse_qs(parsed.query)
-    if "v" in qs:
-        return qs["v"][0]
-    m = re.search(r"/(shorts|embed|v)/([^/?&]+)", parsed.path)
-    if m:
-        return m.group(2)
-    raise ValueError(f"Cannot extract video ID from: {url}")
+    """Extract and validate YouTube video ID from URL.
 
-# \u2500\u2500 Cache \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    Rejects non-YouTube hosts and malformed video IDs.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https", ""):
+        raise ValueError(f"Cannot extract video ID from: {url}")
+    host = parsed.netloc.lower()
+    if host and host not in _YOUTUBE_HOSTS:
+        raise ValueError(f"Cannot extract video ID from: {url}")
+
+    vid = None
+    if host in ("youtu.be", "www.youtu.be"):
+        vid = parsed.path.lstrip("/").split("/")[0] or None
+    if vid is None:
+        qs = parse_qs(parsed.query)
+        if "v" in qs:
+            vid = qs["v"][0]
+    if vid is None:
+        m = re.search(r"/(shorts|embed|v)/([^/?&]+)", parsed.path)
+        if m:
+            vid = m.group(2)
+    if vid is None:
+        raise ValueError(f"Cannot extract video ID from: {url}")
+    if not _VIDEO_ID_PATTERN.match(vid):
+        raise ValueError(f"Cannot extract video ID from: {url}")
+    return vid
+
+# -- Cache --------------------------------------------------------------------
 
 _CACHE_REQUIRED_FIELDS = {
     "cache_version": int,
@@ -68,6 +93,21 @@ _CACHE_REQUIRED_FIELDS = {
     "language": str,
     "cached_at": str,
 }
+
+
+def _validate_segment(seg: object) -> bool:
+    """Validate a single cache segment has correct structure."""
+    if not isinstance(seg, dict):
+        return False
+    if not isinstance(seg.get("text"), str):
+        return False
+    start = seg.get("start")
+    if not isinstance(start, (int, float)):
+        return False
+    dur = seg.get("duration")
+    if not isinstance(dur, (int, float)):
+        return False
+    return True
 
 
 def _cache_path(video_id: str, languages: list) -> Path:
@@ -79,7 +119,7 @@ def _cache_path(video_id: str, languages: list) -> Path:
 
 
 def load_from_cache(video_id: str, languages: list) -> dict | None:
-    """Load cached transcript. Returns None on any schema/version mismatch."""
+    """Load and validate cached transcript. Returns None on any mismatch."""
     path = _cache_path(video_id, languages)
     if not path.exists():
         return None
@@ -89,12 +129,24 @@ def load_from_cache(video_id: str, languages: list) -> dict | None:
         return None
     if not isinstance(data, dict):
         return None
+    # Exact version match
     if data.get("cache_version") != CACHE_VERSION:
         return None
+    # Required top-level fields
     for field, expected_type in _CACHE_REQUIRED_FIELDS.items():
-        val = data.get(field)
-        if not isinstance(val, expected_type):
+        if not isinstance(data.get(field), expected_type):
             return None
+    # Validate every segment
+    for seg in data["segments"]:
+        if not _validate_segment(seg):
+            return None
+    # Optional fields: validate types if present
+    if "is_generated" in data and not isinstance(data["is_generated"], bool):
+        return None
+    if "meta" in data and not isinstance(data["meta"], dict):
+        return None
+    if "meta_sources" in data and not isinstance(data["meta_sources"], dict):
+        return None
     return data
 
 
@@ -117,7 +169,7 @@ def save_to_cache(video_id: str, segments: list, language: str,
         encoding="utf-8",
     )
 
-# \u2500\u2500 Metadata \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# -- Metadata -----------------------------------------------------------------
 
 def _fetch_oembed(url: str) -> dict:
     try:
@@ -166,7 +218,7 @@ def fetch_metadata(url: str) -> dict:
     return {"fields": fields, "sources": sources,
             "missing": missing, "complete": len(missing) == 0}
 
-# \u2500\u2500 Transcript \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# -- Transcript ---------------------------------------------------------------
 
 def fetch_transcript(video_id: str, languages: list) -> tuple:
     """Returns (segments, language_code, is_generated, fallback_used)."""
@@ -192,7 +244,6 @@ def fetch_transcript_with_retry(video_id: str, languages: list) -> tuple:
     """Returns (segments, language_code, is_generated, fallback_used, attempts).
 
     Only retries known transient errors (allowlist). All others raise immediately.
-    Every raised exception carries actual_attempts for accurate error reporting.
     """
     last_err = None
     for attempt in range(1, MAX_RETRIES + 1):
@@ -209,7 +260,7 @@ def fetch_transcript_with_retry(video_id: str, languages: list) -> tuple:
     last_err.actual_attempts = MAX_RETRIES
     raise last_err
 
-# \u2500\u2500 Formatting \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# -- Formatting ---------------------------------------------------------------
 
 def clean_text(segments: list) -> str:
     lines = []
@@ -248,7 +299,7 @@ def write_md(path: Path, url: str, meta: dict, language: str,
     )
     path.write_text(content, encoding="utf-8")
 
-# \u2500\u2500 CLI \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# -- CLI ----------------------------------------------------------------------
 
 def main():
     p = argparse.ArgumentParser(description="YouTube transcript -> markdown")
