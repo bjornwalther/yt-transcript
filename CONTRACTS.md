@@ -8,44 +8,75 @@ are both derived from this document. Any change to behavior starts here.
 ## 1. Exception Classification
 
 Complete mapping of `youtube_transcript_api._errors` to MCP error codes.
-Classification is by exception class, never by message parsing (except as
-last-resort fallback for unknown generic exceptions).
+Classification is by exception class name. Message parsing is a last-resort
+fallback for unknown generic exceptions only.
+
+### Retry policy
+
+**Allowlist**: only explicitly listed transient errors are retried.
+Everything else raises immediately on first attempt. Unknown/unrecognized
+exceptions are treated as non-retryable.
 
 ### Permanent (non-retryable)
 
-| Exception class         | MCP error code              | Retryable |
-|------------------------|-----------------------------|----------|
-| TranscriptsDisabled    | TRANSCRIPT_NOT_AVAILABLE    | no        |
-| NoTranscriptFound      | LANGUAGE_NOT_AVAILABLE      | no        |
-| VideoUnavailable       | VIDEO_UNAVAILABLE           | no        |
-| VideoUnplayable        | VIDEO_UNAVAILABLE           | no        |
-| InvalidVideoId         | INVALID_URL                 | no        |
-| AgeRestricted          | VIDEO_UNAVAILABLE           | no        |
-| IpBlocked              | YOUTUBE_IP_BLOCKED          | no        |
-| RequestBlocked         | YOUTUBE_IP_BLOCKED          | no        |
-| PoTokenRequired        | PO_TOKEN_REQUIRED           | no        |
-| NotTranslatable        | LANGUAGE_NOT_AVAILABLE      | no        |
-| TranslationLanguageNotAvailable | LANGUAGE_NOT_AVAILABLE | no    |
+| Exception class                   | MCP error code           |
+|-----------------------------------|--------------------------|
+| TranscriptsDisabled               | TRANSCRIPT_NOT_AVAILABLE |
+| NoTranscriptFound                 | LANGUAGE_NOT_AVAILABLE   |
+| VideoUnavailable                  | VIDEO_UNAVAILABLE        |
+| VideoUnplayable                   | VIDEO_UNAVAILABLE        |
+| InvalidVideoId                    | INVALID_URL              |
+| AgeRestricted                     | VIDEO_UNAVAILABLE        |
+| IpBlocked                         | YOUTUBE_IP_BLOCKED       |
+| RequestBlocked                    | YOUTUBE_IP_BLOCKED       |
+| PoTokenRequired                   | PO_TOKEN_REQUIRED        |
+| NotTranslatable                   | LANGUAGE_NOT_AVAILABLE   |
+| TranslationLanguageNotAvailable   | LANGUAGE_NOT_AVAILABLE   |
+| YouTubeDataUnparsable             | RATE_LIMITED             |
+| FailedToCreateConsentCookie       | RATE_LIMITED             |
+| CookieError                       | RATE_LIMITED             |
+| CookieInvalid                     | RATE_LIMITED             |
+| CookiePathInvalid                 | RATE_LIMITED             |
+| CouldNotRetrieveTranscript        | RATE_LIMITED             |
+| YouTubeTranscriptApiException     | RATE_LIMITED             |
+| (unknown Exception)               | RATE_LIMITED             |
+
+All of the above are non-retryable. Only the transient list below is retried.
 
 ### Transient (retryable)
 
-Only these are retried. Everything else raises immediately.
+| Exception class         | MCP error code | Max retries |
+|------------------------|----------------|-------------|
+| YouTubeRequestFailed   | RATE_LIMITED   | 2 (3 total) |
 
-| Exception class         | MCP error code   | Retryable |
-|------------------------|------------------|----------|
-| YouTubeRequestFailed   | RATE_LIMITED     | yes       |
-| (generic Exception)    | RATE_LIMITED     | yes       |
+No other exception type is retried, including unknown/generic exceptions.
 
 ### Internal
 
-| Condition              | MCP error code              |
-|-----------------------|-----------------------------|
-| URL parse failure      | INVALID_URL                 |
+| Condition                 | MCP error code                            |
+|--------------------------|-------------------------------------------|
+| URL parse failure         | INVALID_URL                               |
+| Non-YouTube host          | INVALID_URL                               |
 | All metadata sources fail | METADATA_FETCH_FAILED (warning, not error) |
 
 ---
 
-## 2. Success Response Schema (JSON)
+## 2. URL Validation
+
+Accepted hosts: `youtube.com`, `www.youtube.com`, `m.youtube.com`,
+`youtu.be`, `www.youtu.be`, `music.youtube.com`.
+
+Accepted schemes: `http`, `https`.
+
+Video ID format: 11 characters, `[A-Za-z0-9_-]` only.
+
+Any URL with a non-YouTube host or an extracted ID that does not match the
+format is rejected with INVALID_URL. Tests must cover non-YouTube hosts
+containing `v=`, `/shorts/`, `/embed/` patterns.
+
+---
+
+## 3. Success Response Schema (JSON)
 
 Compact serialization: `json.dumps(response, ensure_ascii=False, separators=(",",":"))`
 
@@ -60,10 +91,10 @@ Compact serialization: `json.dumps(response, ensure_ascii=False, separators=(","
   "language": "string",
   "language_requested": "string",
   "language_fallback": false,
-  "caption_type": "manual | auto-generated",
+  "caption_type": "manual | auto-generated | unknown",
   "segment_count": 0,
   "transcript_duration_seconds": 0.0,
-  "metadata_sources": {"title": "oembed", "channel": "oembed", "published": "pytubefix"},
+  "metadata_sources": {},
   "metadata_missing": [],
   "cache_hit": false,
   "cache_age_days": null,
@@ -80,29 +111,32 @@ Compact serialization: `json.dumps(response, ensure_ascii=False, separators=(","
 
 ### Output modes
 
-| `output` param | `segments` present | `transcript_text` present |
-|---------------|-------------------|-------------------------|
-| segments (default) | yes | no |
-| text | no | yes |
-| both | yes | yes |
+| `output` param      | `segments` present | `transcript_text` present |
+|---------------------|-------------------|---------------------------|
+| segments (default)  | yes               | no                        |
+| text                | no                | yes                       |
+| both                | yes               | yes                       |
 
 ### Invariants
 
 - Default response contains exactly ONE transcript representation.
-- `metadata_missing` is `[]` (not null) when nothing is missing.
-- `warnings` is `[]` (not null) when there are no warnings.
-- `metadata_sources` is `{}` (not null) when empty.
+- `metadata_missing` is always `[]` (never null).
+- `warnings` is always `[]` (never null).
+- `metadata_sources` is always `{}` (never null).
 - `cache_age_days` is `null` only when `cache_hit` is `false`.
 - `content_hash` is ALWAYS computed from the canonical `segments` array
-  (rounded start/end/text). When `output=text`, the hash is still present
-  and documented as an opaque transcript identity (not recomputable from
-  that response; recomputable when `output=segments` or `output=both`).
+  (rounded start/end/text). When `output=text`, the hash is an opaque
+  transcript identity (not recomputable from that response alone).
 - Markdown format always renders readable text regardless of output mode.
-- `caption_type` is `"unknown"` if the information is unavailable.
+- `caption_type` is `"unknown"` when the information is unavailable
+  (e.g., legacy cache entries that predate this field).
+- Metadata warnings are generated from the final meta_sources/meta_fields
+  AFTER the cache/fetch merge, so they appear identically whether the
+  response is cached or fresh.
 
 ---
 
-## 3. Error Response Schema (JSON)
+## 4. Error Response Schema (JSON)
 
 ```json
 {
@@ -120,29 +154,28 @@ Compact serialization: `json.dumps(response, ensure_ascii=False, separators=(","
 
 ### Invariants
 
-- `retryable` boolean tells agents whether retrying is appropriate.
-- `retry_count` reflects actual retries performed (attempts - 1).
+- `retryable` tells agents whether retrying may help.
+- `retry_count` = actual retries performed (attempts - 1).
 - `fallback_attempted` is true when a language fallback was tried, even if it failed.
-- `fetch_duration_seconds` is present in ALL error responses including INVALID_URL.
+- `fetch_duration_seconds` present in ALL error responses including INVALID_URL.
 - Error responses respect `format` param (JSON or markdown).
 
 ---
 
-## 4. Cache Contract
+## 5. Cache Contract
 
 ### Key generation
 
-Cache filename = `SHA256(json.dumps({"video_id": video_id, "languages": languages}, sort_keys=True))[:16] + ".json"`
+`SHA256(json.dumps({"video_id": vid, "languages": langs}, sort_keys=True))[:16] + ".json"`
 
-Raw language input NEVER appears in the filename. The original request vector
-is stored inside the payload for provenance.
+Raw language input NEVER appears in the filename.
 
 ### Schema
 
 ```json
 {
   "cache_version": 2,
-  "segments": [...],
+  "segments": [{"text": "str", "start": 0.0, "duration": 0.0}],
   "language": "en",
   "requested_languages": ["sv", "en"],
   "is_generated": false,
@@ -152,26 +185,36 @@ is stored inside the payload for provenance.
 }
 ```
 
-### Invariants
+### Validation on load
 
-- Cache hit requires `cache_version == CACHE_VERSION` (exact match, not >=).
-- All required fields validated on load (type check). Missing or wrong type = cache miss.
+- `cache_version` must be `int` and `== CACHE_VERSION` (exact, not >=).
+- `segments` must be `list`. Each element must be a `dict` with keys
+  `text` (str), `start` (int or float), `duration` (int or float).
+- `language` must be `str`.
+- `cached_at` must be `str`.
+- `is_generated` must be `bool` if present; default to `False` if missing (for compat).
+- `meta` must be `dict` if present; default to `{}`.
+- `meta_sources` must be `dict` if present; default to `{}`.
+- Any type mismatch, missing required field, or malformed segment = cache miss.
 - Malformed JSON, future versions, truncated files = cache miss, never crash.
-- Legacy v1 entries (no version field) are silently skipped.
 
 ---
 
-## 5. Tool Schema
+## 6. Tool Schema
 
 Input schema includes `additionalProperties: false`.
-Language input validated: max 20 codes, each 1-10 chars, alphanumeric + hyphen only.
+Language codes: max 20, each 1-10 chars, `[a-zA-Z0-9-]` only.
 
 ---
 
-## 6. Warning Codes
+## 7. Warning Codes
 
-| Code | Trigger | Blocking |
-|------|---------|----------|
-| METADATA_FETCH_FAILED | All or partial metadata sources returned "none" | no |
-| LANGUAGE_FALLBACK | Returned language not in requested list | no |
-| AUTO_GENERATED | `is_generated` is true | no |
+| Code                  | Trigger                                          |
+|-----------------------|--------------------------------------------------|
+| METADATA_FETCH_FAILED | All or partial metadata sources returned "none"  |
+| LANGUAGE_FALLBACK     | Returned language not in requested list           |
+| AUTO_GENERATED        | `is_generated` is true                            |
+
+Warnings are generated AFTER cache/fetch merge from the final state.
+A cached response with missing metadata produces the same warnings as
+the original fresh response.
