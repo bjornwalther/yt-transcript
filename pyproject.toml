@@ -1,10 +1,10 @@
 [project]
 name = "ytfetch-mcp"
-version = "1.1.0"
+version = "1.2.0"
 description = "YouTube transcript MCP server for Claude & ChatGPT. Token-efficient, cached, reliable."
 requires-python = ">=3.11"
 license = "MIT"
-authors = [{ name = "Björn Walther" }]
+authors = [{ name = "Bj\u00f6rn Walther" }]
 readme = "README.md"
 keywords = ["youtube", "transcript", "mcp", "claude", "chatgpt", "ai"]
 classifiers = [
