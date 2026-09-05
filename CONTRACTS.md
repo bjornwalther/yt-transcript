@@ -66,13 +66,12 @@ No other exception type is retried, including unknown/generic exceptions.
 Accepted hosts: `youtube.com`, `www.youtube.com`, `m.youtube.com`,
 `youtu.be`, `www.youtu.be`, `music.youtube.com`.
 
-Accepted schemes: `http`, `https`.
+Accepted schemes: `http`, `https` (bare hostnames without scheme also accepted).
 
 Video ID format: 11 characters, `[A-Za-z0-9_-]` only.
 
 Any URL with a non-YouTube host or an extracted ID that does not match the
-format is rejected with INVALID_URL. Tests must cover non-YouTube hosts
-containing `v=`, `/shorts/`, `/embed/` patterns.
+format is rejected with INVALID_URL.
 
 ---
 
@@ -93,7 +92,7 @@ Compact serialization: `json.dumps(response, ensure_ascii=False, separators=(","
   "language_fallback": false,
   "caption_type": "manual | auto-generated | unknown",
   "segment_count": 0,
-  "transcript_duration_seconds": 0.0,
+  "transcript_duration_seconds": "number | null",
   "metadata_sources": {},
   "metadata_missing": [],
   "cache_hit": false,
@@ -189,10 +188,11 @@ Raw language input NEVER appears in the filename.
 
 - `cache_version` must be `int` and `== CACHE_VERSION` (exact, not >=).
 - `segments` must be `list`. Each element must be a `dict` with keys
-  `text` (str), `start` (int or float), `duration` (int or float).
+  `text` (str), `start` (finite non-negative int or float, not bool),
+  `duration` (finite non-negative int or float, not bool).
 - `language` must be `str`.
 - `cached_at` must be `str`.
-- `is_generated` must be `bool` if present; default to `False` if missing (for compat).
+- `is_generated` must be `bool` if present; maps to `caption_type: "unknown"` if missing.
 - `meta` must be `dict` if present; default to `{}`.
 - `meta_sources` must be `dict` if present; default to `{}`.
 - Any type mismatch, missing required field, or malformed segment = cache miss.
@@ -214,6 +214,7 @@ Language codes: max 20, each 1-10 chars, `[a-zA-Z0-9-]` only.
 | METADATA_FETCH_FAILED | All or partial metadata sources returned "none"  |
 | LANGUAGE_FALLBACK     | Returned language not in requested list           |
 | AUTO_GENERATED        | `is_generated` is true                            |
+| CACHE_WRITE_FAILED    | Cache directory unwritable or disk full            |
 
 Warnings are generated AFTER cache/fetch merge from the final state.
 A cached response with missing metadata produces the same warnings as
