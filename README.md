@@ -8,6 +8,7 @@
 
 YouTube transcripts as token-efficient AI context. One fetch, cached forever.
 
+<!-- mcp-name: io.github.bjornwalther/yt-transcript-mcp -->
 Agent-first: returns structured JSON by default. Zero dependencies on yt-dlp, ffmpeg, or API keys.
 
 Works with Claude Desktop, ChatGPT Desktop, Cursor, Windsurf, and any MCP client.
@@ -132,9 +133,19 @@ Markdown format (`format=markdown`) always renders readable text regardless of o
 
 ---
 
+## How it works
+
+- Fetches transcripts directly from YouTube's InnerTube API. No yt-dlp, ffmpeg, browser, Node.js, or API key.
+- Tries several YouTube client identities (`android_vr`, `ios`, `android`) and moves to the next only when one is bot-checked or needs a Proof-of-Origin token. A client that was blocked is skipped for 10 minutes.
+- Retries only transient failures (HTTP 429, 5xx, timeouts) and never repeats a permanent one.
+
+This relies on YouTube's unofficial client API, so it can need an update when YouTube changes it.
+
+---
+
 ## Error handling
 
-Every error returns a structured response with a machine-readable code and a `retryable` flag so agents can branch automatically:
+Failures are MCP tool errors (`isError: true`). The result's text is a structured payload with a machine-readable code and a `retryable` flag, so agents can branch automatically:
 
 ```json
 {
@@ -152,8 +163,8 @@ Every error returns a structured response with a machine-readable code and a `re
 | `TRANSCRIPT_NOT_AVAILABLE` | Transcripts disabled for this video | No |
 | `LANGUAGE_NOT_AVAILABLE` | Reserved, not currently returned: if none of your languages exist, another available track is used and `LANGUAGE_FALLBACK` is warned | No |
 | `VIDEO_UNAVAILABLE` | Video unavailable, private, age-restricted, or unplayable | No |
-| `YOUTUBE_IP_BLOCKED` | YouTube is blocking your IP | No |
-| `PO_TOKEN_REQUIRED` | Video requires Proof-of-Origin token | No |
+| `YOUTUBE_IP_BLOCKED` | YouTube bot check on every client tried (often specific to the video) | No |
+| `PO_TOKEN_REQUIRED` | Every client tried needs a Proof-of-Origin token | No |
 | `RATE_LIMITED` | YouTube rate limit (429), server error, or timeout. Also used for unclassified failures: check `retryable` | Yes, unless `retryable` is `false` |
 
 ---
@@ -207,6 +218,7 @@ CLI flags: `--date`, `--title`, `--channel`, `--lang`, `--out`, `--no-clean`, `-
 - [ ] Remote HTTP transport -- expose as streamable HTTP MCP server
 - [ ] Schema.org metadata -- replace pytubefix for publish date
 - [ ] MCP outputSchema / structured content
+- [ ] PO-token fallback -- keep working if YouTube enforces tokens on every client
 
 ---
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """YouTube transcript fetcher. CLI + shared logic for MCP server."""
 
-import argparse, hashlib, json, logging, math, re, sys, time
+import argparse, functools, hashlib, importlib.metadata, json, logging, math, re, sys, time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -19,6 +19,16 @@ except ImportError:
 _EM_DASH = "\u2014"
 
 log = logging.getLogger("ytfetch")
+
+
+@functools.lru_cache(maxsize=1)
+def package_version() -> str:
+    """Installed ytfetch-mcp version: the single source for the MCP server version
+    and the HTTP User-Agent."""
+    try:
+        return importlib.metadata.version("ytfetch-mcp")
+    except importlib.metadata.PackageNotFoundError:
+        return "0+unknown"
 
 CACHE_DIR = Path.home() / ".cache" / "yt-transcript"
 CACHE_VERSION = 2
@@ -160,7 +170,7 @@ def save_to_cache(video_id: str, segments: list, language: str,
 def _fetch_oembed(url: str) -> dict:
     try:
         req = Request(f"https://www.youtube.com/oembed?url={url}&format=json",
-                      headers={"User-Agent": "yt-transcript/1.2"})
+                      headers={"User-Agent": f"yt-transcript/{package_version()}"})
         with urlopen(req, timeout=10) as r:
             d = json.loads(r.read().decode())
         return {"title": d.get("title", ""), "channel": d.get("author_name", ""), "published": ""}
