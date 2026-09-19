@@ -105,6 +105,23 @@ not expose HTTP status. Until then, the behavior above is authoritative.
 - Retry only 5xx, timeouts, and connection errors. Other 4xx statuses (for
   example 403, 404) are not retried.
 - Errors expose `http_status` when the failure came from an HTTP response.
+- Clients are tried in order `android_vr`, `ios`, `android`. The chain advances
+  only on client-specific blocks: a bot check (`YOUTUBE_IP_BLOCKED`) or a
+  required PO token (`PO_TOKEN_REQUIRED`). Any other failure ends the fetch.
+  When every client is blocked, the last error is raised and its message lists
+  the clients tried.
+- A caption track whose URL carries `exp=xpe`, or a 200 caption response with an
+  empty body (how YouTube answers a request missing a required token), is
+  `PO_TOKEN_REQUIRED`.
+- `fallback_attempted` is true on any error raised after a language fallback
+  track was selected, including when downloading that track fails.
+- Caption URLs are followed only if they are `https` on `youtube.com` or a
+  subdomain; other tracks are ignored.
+- `&fmt=srv3` is removed from caption URLs so YouTube answers in the simple
+  `<transcript><text>` format, as `youtube-transcript-api` does. The srv3
+  format is still parsed as a fallback.
+- Caption segments with no text are dropped, so `segment_count` may differ from
+  the library for videos that contain empty caption elements.
 
 ---
 
