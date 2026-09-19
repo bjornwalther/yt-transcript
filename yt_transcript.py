@@ -11,6 +11,8 @@ from urllib.error import URLError
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import NoTranscriptFound, TranscriptsDisabled
 
+from yt_errors import from_library_exception
+
 _OPTIONAL_ERRORS = {}
 for _name in ("PoTokenRequired", "VideoUnavailable", "VideoUnplayable",
               "InvalidVideoId", "AgeRestricted", "IpBlocked", "RequestBlocked",
@@ -36,7 +38,6 @@ CACHE_DIR = Path.home() / ".cache" / "yt-transcript"
 CACHE_VERSION = 2
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 3
-_RETRYABLE_CLASS_NAMES = {"YouTubeRequestFailed"}
 _YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com",
                   "youtu.be", "www.youtu.be", "music.youtube.com"}
 _VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -45,7 +46,7 @@ _VALID_SOURCES = {"oembed", "pytubefix", "manual", "none"}
 
 
 def _is_retryable(exc: Exception) -> bool:
-    return type(exc).__name__ in _RETRYABLE_CLASS_NAMES
+    return from_library_exception(exc).retryable
 
 
 def extract_video_id(url: str) -> str:
@@ -235,16 +236,18 @@ def fetch_transcript(video_id: str, languages: list) -> tuple:
 
 
 def fetch_transcript_with_retry(video_id: str, languages: list) -> tuple:
+    """Fetch with retry. Raises TranscriptError; only retryable errors are retried."""
     last_err = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             segs, lang, is_gen, fallback = fetch_transcript(video_id, languages)
             return segs, lang, is_gen, fallback, attempt
         except Exception as e:
-            e.actual_attempts = attempt
-            if not _is_retryable(e):
-                raise
-            last_err = e
+            err = from_library_exception(e)
+            err.actual_attempts = attempt
+            if not err.retryable:
+                raise err
+            last_err = err
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_DELAY_SECONDS)
     last_err.actual_attempts = MAX_RETRIES
