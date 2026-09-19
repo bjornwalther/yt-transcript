@@ -8,7 +8,10 @@ Or run:   uv run mcp_server.py
 import asyncio
 import hashlib
 import json
+import logging
+import os
 import re
+import sys
 import time
 from datetime import datetime
 
@@ -16,7 +19,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 import mcp.types as types
 
-from yt_errors import INVALID_URL, from_library_exception
+from yt_errors import INVALID_URL, as_transcript_error
 from yt_transcript import (
     extract_video_id, fetch_metadata, fetch_transcript_with_retry,
     clean_text, raw_text, load_from_cache, save_to_cache,
@@ -24,6 +27,7 @@ from yt_transcript import (
 )
 
 server = Server("yt-transcript")
+log = logging.getLogger("ytfetch")
 
 _EM_DASH = "\u2014"
 
@@ -32,6 +36,7 @@ _EM_DASH = "\u2014"
 
 METADATA_FETCH_FAILED = "METADATA_FETCH_FAILED"
 CACHE_WRITE_FAILED = "CACHE_WRITE_FAILED"
+CLIENT_FALLBACK = "CLIENT_FALLBACK"
 
 # -- Language validation ------------------------------------------------------
 
@@ -98,7 +103,7 @@ def _build_metadata_warnings(meta_fields: dict, meta_sources: dict) -> list[dict
 
 def _classify_exception(e: Exception) -> tuple[str, str, int]:
     """Return (error_code, message, retry_count) for any exception."""
-    err = from_library_exception(e)
+    err = as_transcript_error(e)
     retries = max(0, err.actual_attempts - 1) if err.retryable else 0
     return err.code, str(err), retries
 
@@ -121,6 +126,16 @@ def _format_error(resp: dict, fmt: str) -> str:
 def _build_segments(raw_segments: list) -> list[dict]:
     return [{"text": s["text"], "start": round(s["start"], 2),
              "end": round(s["start"] + s["duration"], 2)} for s in raw_segments]
+
+async def _fetch_metadata_safe(url: str) -> tuple[dict, dict]:
+    """Metadata never fails the call: any error yields empty fields sourced as "none"."""
+    try:
+        meta = await asyncio.to_thread(fetch_metadata, url)
+        return meta["fields"], meta["sources"]
+    except Exception:
+        log.warning("Metadata fetch failed for %s", url, exc_info=True)
+        return ({"title": "", "channel": "", "published": ""},
+                {"title": "none", "channel": "none", "published": "none"})
 
 # -- Tool ---------------------------------------------------------------------
 
@@ -178,25 +193,24 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         cache_age = 0
         fetched_at = datetime.now().strftime("%Y-%m-%d")
 
+        # Metadata and transcript are independent: fetch them concurrently.
+        meta_task = asyncio.create_task(_fetch_metadata_safe(url))
         try:
-            meta = await asyncio.to_thread(fetch_metadata, url)
-            meta_fields = meta["fields"]
-            meta_sources = meta["sources"]
-        except Exception:
-            meta_fields = {"title": "", "channel": "", "published": ""}
-            meta_sources = {"title": "none", "channel": "none", "published": "none"}
-
-        try:
-            segments_raw, language, is_generated, fallback_attempted, attempts = (
-                await asyncio.to_thread(fetch_transcript_with_retry, video_id, languages))
-            retry_count = attempts - 1
+            result, attempts = await asyncio.to_thread(
+                fetch_transcript_with_retry, video_id, languages)
         except Exception as e:
+            meta_task.cancel()
             dur = round(time.monotonic() - fetch_start, 2)
-            err = from_library_exception(e)
+            err = as_transcript_error(e)
             error_code, error_msg, err_retries = _classify_exception(err)
             resp = _error_response(error_code, error_msg, video_id, url,
                                    err_retries, err.fallback_attempted, dur, err.retryable)
             return [types.TextContent(type="text", text=_format_error(resp, fmt))]
+        meta_fields, meta_sources = await meta_task
+        segments_raw, language = result.segments, result.language_code
+        is_generated, fallback_attempted = result.is_generated, result.fallback_used
+        retry_count = attempts - 1
+        log.info("Fetched %s via %s after %d attempt(s).", video_id, result.client, attempts)
 
         try:
             save_to_cache(video_id, segments_raw, language, languages,
@@ -204,6 +218,11 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         except OSError:
             warnings.append({"code": CACHE_WRITE_FAILED,
                              "message": "Cache write failed. Transcript returned without caching."})
+
+        if len(result.clients_tried) > 1:
+            blocked = ", ".join(result.clients_tried[:-1])
+            warnings.append({"code": CLIENT_FALLBACK,
+                             "message": f"Served via {result.client} after {blocked} was blocked."})
 
     fetch_duration = round(time.monotonic() - fetch_start, 2)
 
@@ -292,7 +311,22 @@ async def _serve():
     async with stdio_server() as (read, write):
         await server.run(read, write, server.create_initialization_options())
 
+def _configure_logging() -> None:
+    """Log to stderr (stdout carries the MCP protocol). YTFETCH_LOG_LEVEL overrides
+    the WARNING default; unknown values fall back to WARNING."""
+    level = getattr(logging, os.environ.get("YTFETCH_LOG_LEVEL", "WARNING").upper(), None)
+    if not isinstance(level, int):
+        level = logging.WARNING
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+    logger = logging.getLogger("ytfetch")
+    logger.handlers[:] = [handler]
+    logger.setLevel(level)
+    logger.propagate = False
+
+
 def main():
+    _configure_logging()
     asyncio.run(_serve())
 
 if __name__ == "__main__":

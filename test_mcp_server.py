@@ -1,6 +1,6 @@
 """Behavioral tests for yt-transcript-mcp, driven by CONTRACTS.md.
 
-Tests mock youtube_transcript_api to avoid network calls.
+Tests avoid network calls.
 Run: pytest test_mcp_server.py -v
 """
 
@@ -211,59 +211,42 @@ class TestURLValidation:
 
 class TestExceptionClassification:
 
-    @pytest.mark.parametrize("exc_class,expected_code", [
-        ("TranscriptsDisabled", "TRANSCRIPT_NOT_AVAILABLE"),
-        ("NoTranscriptFound", "LANGUAGE_NOT_AVAILABLE"),
+    @pytest.mark.parametrize("error_cls,expected_code", [
+        ("TranscriptNotAvailable", "TRANSCRIPT_NOT_AVAILABLE"),
+        ("LanguageNotAvailable", "LANGUAGE_NOT_AVAILABLE"),
         ("VideoUnavailable", "VIDEO_UNAVAILABLE"),
-        ("VideoUnplayable", "VIDEO_UNAVAILABLE"),
-        ("InvalidVideoId", "INVALID_URL"),
-        ("AgeRestricted", "VIDEO_UNAVAILABLE"),
-        ("IpBlocked", "YOUTUBE_IP_BLOCKED"),
-        ("RequestBlocked", "YOUTUBE_IP_BLOCKED"),
+        ("InvalidVideoIdError", "INVALID_URL"),
+        ("YouTubeIpBlocked", "YOUTUBE_IP_BLOCKED"),
         ("PoTokenRequired", "PO_TOKEN_REQUIRED"),
-        ("NotTranslatable", "LANGUAGE_NOT_AVAILABLE"),
-        ("TranslationLanguageNotAvailable", "LANGUAGE_NOT_AVAILABLE"),
-        ("YouTubeDataUnparsable", "RATE_LIMITED"),
-        ("FailedToCreateConsentCookie", "RATE_LIMITED"),
-        ("CookieError", "RATE_LIMITED"),
-        ("CookieInvalid", "RATE_LIMITED"),
-        ("CookiePathInvalid", "RATE_LIMITED"),
-        ("CouldNotRetrieveTranscript", "RATE_LIMITED"),
-        ("YouTubeTranscriptApiException", "RATE_LIMITED"),
+        ("TransientRequestFailed", "RATE_LIMITED"),
+        ("UpstreamFailure", "RATE_LIMITED"),
     ])
-    def test_exception_classification(self, exc_class, expected_code):
+    def test_typed_error_classification(self, error_cls, expected_code):
+        import yt_errors
         from mcp_server import _classify_exception
-        exc = type(exc_class, (Exception,), {})("test error")
-        exc.actual_attempts = 1
+        exc = getattr(yt_errors, error_cls)("test error")
         code, msg, retries = _classify_exception(exc)
         assert code == expected_code
+        assert msg == "test error"
 
-    def test_transient_retryable(self):
+    def test_transient_reports_retries_performed(self):
         from mcp_server import _classify_exception
-        exc = type("YouTubeRequestFailed", (Exception,), {})("429")
-        exc.actual_attempts = 3
-        code, msg, retries = _classify_exception(exc)
+        from yt_errors import TransientRequestFailed
+        code, msg, retries = _classify_exception(TransientRequestFailed("429", actual_attempts=3))
         assert code == "RATE_LIMITED"
         assert retries == 2
 
-    def test_non_retryable_in_allowlist(self):
-        from yt_transcript import _is_retryable
-        for name in ["TranscriptsDisabled", "VideoUnavailable", "AgeRestricted",
-                     "InvalidVideoId", "VideoUnplayable", "IpBlocked",
-                     "RequestBlocked", "PoTokenRequired", "NotTranslatable",
-                     "TranslationLanguageNotAvailable", "CookieError"]:
-            exc = type(name, (Exception,), {})("test")
-            assert not _is_retryable(exc), f"{name} should not be retryable"
+    def test_non_retryable_reports_zero_retries(self):
+        from mcp_server import _classify_exception
+        from yt_errors import VideoUnavailable
+        assert _classify_exception(VideoUnavailable("x", actual_attempts=3))[2] == 0
 
-    def test_only_transient_retryable(self):
-        from yt_transcript import _is_retryable
-        exc = type("YouTubeRequestFailed", (Exception,), {})("test")
-        assert _is_retryable(exc)
-
-    def test_unknown_exception_not_retryable(self):
-        from yt_transcript import _is_retryable
-        exc = type("SomeNewException", (Exception,), {})("test")
-        assert not _is_retryable(exc)
+    def test_unexpected_exception_is_classified_as_upstream_failure(self):
+        from mcp_server import _classify_exception
+        code, msg, retries = _classify_exception(RuntimeError("weird"))
+        assert code == "RATE_LIMITED"
+        assert "weird" in msg
+        assert retries == 0
 
 
 class TestContentHash:

@@ -15,7 +15,6 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "youtube-transcript-api>=1.0.0",
     "pytubefix>=6.0.0",
     "mcp>=1.0.0,<2",
 ]
