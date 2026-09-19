@@ -547,6 +547,17 @@ class TestNativeBackend:
         assert any("android_vr" in r.getMessage() and r.levelno == logging.WARNING
                    for r in caplog.records)
 
+    def test_blocked_client_is_skipped_on_later_calls_without_a_warning(self, tmp_path, caplog):
+        transport = FakeTransport(_players(ios=["player_ios_captioned.json"] * 2))
+        with caplog.at_level(logging.INFO, logger="ytfetch"), _env(tmp_path, transport=transport):
+            first = call_json({"url": URL})
+            caplog.clear()
+            second = call_json({"url": URL, "bypass_cache": True})
+        assert [w["code"] for w in first["warnings"]] == ["CLIENT_FALLBACK"]
+        assert second["warnings"] == []
+        assert len(transport.posts()) == 3
+        assert any("Trying android_vr last" in r.getMessage() for r in caplog.records)
+
     def test_client_fallback_warning_is_absent_on_cache_hit(self, tmp_path):
         transport = FakeTransport(_players(ios="player_ios_captioned.json"))
         with _env(tmp_path, transport=transport):

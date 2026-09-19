@@ -16,6 +16,8 @@ import logging
 import math
 import re
 import socket
+import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -32,6 +34,7 @@ log = logging.getLogger("ytfetch.innertube")
 
 PLAYER_URL = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false"
 REQUEST_TIMEOUT_SECONDS = 10
+CLIENT_COOLDOWN_SECONDS = 600
 MAX_BODY_BYTES = 5_000_000
 
 _VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -323,6 +326,51 @@ def fetch_track_segments(track: CaptionTrack, client: ClientConfig,
     return parse_timedtext(raw)
 
 
+# -- Client health ------------------------------------------------------------
+
+class ClientHealth:
+    """Per-process record of clients that recently answered with a block.
+
+    A blocked client goes on cooldown: `partition()` puts it after every client that
+    is not on cooldown, so later calls stop wasting a request on it. Cooled clients
+    stay in the list as a last resort. Thread-safe: fetches run in worker threads.
+    """
+
+    def __init__(self, cooldown_seconds: float = CLIENT_COOLDOWN_SECONDS,
+                 clock: Callable[[], float] = time.monotonic):
+        if cooldown_seconds <= 0:
+            raise ValueError(f"cooldown_seconds must be > 0, got {cooldown_seconds}")
+        self._cooldown = cooldown_seconds
+        self._clock = clock
+        self._blocked_until: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def partition(self, clients: "tuple[ClientConfig, ...]"
+                  ) -> "tuple[list[ClientConfig], list[ClientConfig]]":
+        """Split clients into (healthy, cooled), each in the original order."""
+        now = self._clock()
+        with self._lock:
+            cooled_names = {c.name for c in clients
+                            if self._blocked_until.get(c.name, 0.0) > now}
+        return ([c for c in clients if c.name not in cooled_names],
+                [c for c in clients if c.name in cooled_names])
+
+    def mark_blocked(self, name: str) -> None:
+        with self._lock:
+            self._blocked_until[name] = self._clock() + self._cooldown
+
+    def mark_ok(self, name: str) -> None:
+        with self._lock:
+            self._blocked_until.pop(name, None)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._blocked_until.clear()
+
+
+HEALTH = ClientHealth()
+
+
 # -- Orchestration ------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -341,18 +389,25 @@ _ADVANCE_ON = (PoTokenRequired, YouTubeIpBlocked)
 
 def fetch_transcript_native(video_id: str, languages: list[str],
                             transport: Transport = urllib_transport,
-                            clients: tuple[ClientConfig, ...] = CLIENTS) -> NativeTranscript:
+                            clients: tuple[ClientConfig, ...] = CLIENTS,
+                            health: "ClientHealth | None" = None) -> NativeTranscript:
     """Fetch a transcript through the client chain. Raises TranscriptError.
 
-    No retry happens here: retrying is the caller's job and applies to the whole
+    Clients on cooldown (see ClientHealth; the shared HEALTH unless `health` is
+    given) are tried last. No retry happens here: retrying is the caller's job and applies to the whole
     fetch. `fallback_attempted` on a raised error is true when a language fallback
     track had already been selected, even if downloading it failed.
     """
     if not clients:
         raise ValueError("clients must not be empty")
+    health = HEALTH if health is None else health
+    healthy, cooled = health.partition(clients)
+    if cooled:
+        log.info("Trying %s last: recently blocked.", ", ".join(c.name for c in cooled))
+    ordered = healthy + cooled
     tried: list[str] = []
     last_error: "TranscriptError | None" = None
-    for client in clients:
+    for client in ordered:
         tried.append(client.name)
         fallback_used = False
         try:
@@ -364,12 +419,14 @@ def fetch_transcript_native(video_id: str, languages: list[str],
         except _ADVANCE_ON as e:
             e.fallback_attempted = e.fallback_attempted or fallback_used
             last_error = e
+            health.mark_blocked(client.name)
             log.warning("Client %s blocked for %s (%s: %s); trying next client.",
                         client.name, video_id, type(e).__name__, e)
             continue
         except TranscriptError as e:
             e.fallback_attempted = e.fallback_attempted or fallback_used
             raise
+        health.mark_ok(client.name)
         log.info("Fetched %s via %s (language=%s, fallback=%s, clients tried: %s).",
                  video_id, client.name, selection.track.language_code,
                  selection.fallback_used, ", ".join(tried))
