@@ -16,7 +16,7 @@ classifiers = [
 ]
 dependencies = [
     "pytubefix>=6.0.0",
-    "mcp>=1.0.0,<2",
+    "mcp>=1.10.0,<2",
 ]
 
 [project.urls]

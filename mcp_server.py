@@ -7,6 +7,7 @@ Or run:   uv run mcp_server.py
 
 import asyncio
 import hashlib
+import importlib.metadata
 import json
 import logging
 import os
@@ -26,8 +27,22 @@ from yt_transcript import (
     MAX_RETRIES, RETRY_DELAY_SECONDS,
 )
 
-server = Server("yt-transcript")
+def _package_version() -> str:
+    """Installed package version, so MCP clients see ours and not the SDK's."""
+    try:
+        return importlib.metadata.version("ytfetch-mcp")
+    except importlib.metadata.PackageNotFoundError:
+        return "0+unknown"
+
+
+server = Server("yt-transcript", version=_package_version())
 log = logging.getLogger("ytfetch")
+
+
+class ToolFailure(Exception):
+    """A contract error. The MCP SDK turns any exception raised by a tool into an
+    `isError: true` result whose text is str(exception); the message here is the
+    contract error payload (CONTRACTS.md section 4)."""
 
 _EM_DASH = "\u2014"
 
@@ -170,7 +185,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         dur = round(time.monotonic() - fetch_start, 2)
         resp = _error_response(INVALID_URL, f"Cannot extract video ID from: {url}",
                                None, url, 0, False, dur, False)
-        return [types.TextContent(type="text", text=_format_error(resp, fmt))]
+        raise ToolFailure(_format_error(resp, fmt))
 
     warnings = []
     retry_count = 0
@@ -205,7 +220,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             error_code, error_msg, err_retries = _classify_exception(err)
             resp = _error_response(error_code, error_msg, video_id, url,
                                    err_retries, err.fallback_attempted, dur, err.retryable)
-            return [types.TextContent(type="text", text=_format_error(resp, fmt))]
+            raise ToolFailure(_format_error(resp, fmt)) from err
         meta_fields, meta_sources = await meta_task
         segments_raw, language = result.segments, result.language_code
         is_generated, fallback_attempted = result.is_generated, result.fallback_used

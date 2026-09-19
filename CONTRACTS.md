@@ -41,6 +41,14 @@ and the caption endpoint (module `innertube`, standard library only).
   required PO token (`PO_TOKEN_REQUIRED`). Any other failure ends the fetch.
   When every client is blocked, the last error is raised and its message lists
   the clients tried.
+- Client health: a client that answers with a bot check or a required PO token
+  is put on a cooldown (10 minutes, per process). While it lasts, that client is
+  tried only after every client that is not on cooldown, so later calls skip the
+  wasted request. A client that succeeds clears its own cooldown, and a cooled
+  client is still tried as a last resort. Transient failures (429, 5xx, timeouts)
+  never start a cooldown. Skipping a cooled client is logged at `INFO` and does
+  not produce `CLIENT_FALLBACK`; that warning means a client was actually blocked
+  during this fetch.
 - A caption track whose URL carries `exp=xpe`, or a 200 caption response with an
   empty body (how YouTube answers a request missing a required token), is
   `PO_TOKEN_REQUIRED`.
@@ -85,8 +93,8 @@ chain. Every other error, and any unexpected exception (classified as
 
 The server logs to stderr through the `ytfetch` logger (stdout carries the MCP
 protocol). Default level is `WARNING`; set `YTFETCH_LOG_LEVEL=INFO` to log the
-client that served each fetch and the attempt count. Falling back from one
-client to another is always logged at `WARNING`.
+client that served each fetch and the attempt count. A client blocked during a
+fetch is always logged at `WARNING`.
 
 ---
 
@@ -187,6 +195,15 @@ Compact serialization: `json.dumps(response, ensure_ascii=False, separators=(","
 - `fallback_attempted` is true when a language fallback was tried, even if it failed.
 - `fetch_duration_seconds` present in ALL error responses including INVALID_URL.
 - Error responses respect `format` param (JSON or markdown).
+- Every contract error is delivered as an MCP tool error: the result has
+  `isError: true` and its single text content is the error payload above (JSON
+  or markdown). Successful fetches have `isError: false`. The `is_error` field
+  in the JSON payload stays for clients that only read the text.
+- Arguments that violate the tool schema (missing `url`, unknown argument, wrong
+  type or enum value) are rejected by the MCP SDK before the tool runs, as
+  `isError: true` results with a plain-text message, not this JSON payload.
+  This needs an SDK that validates input, which is why `pyproject.toml` sets a
+  minimum `mcp` version.
 
 ---
 

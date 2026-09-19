@@ -18,7 +18,7 @@ from testing_support import (
     FIXTURES, VIDEO_ID, FakeTransport, all_clients as _all_clients, load, load_player,
 )
 from innertube import (
-    CLIENTS, CaptionTrack, HttpResponse, TransportError, check_playability,
+    CLIENTS, CaptionTrack, ClientHealth, HttpResponse, TransportError, check_playability,
     fetch_player_response, fetch_transcript_native, list_tracks, parse_timedtext,
     select_track, urllib_transport,
 )
@@ -465,6 +465,163 @@ class TestOrchestration:
     def test_empty_client_list_is_a_contract_violation(self):
         with pytest.raises(ValueError):
             fetch_transcript_native(VIDEO_ID, ["en"], FakeTransport({}), clients=())
+
+
+# -- Client health ------------------------------------------------------------
+
+class FakeClock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def _names(clients) -> list[str]:
+    return [c.name for c in clients]
+
+
+class TestClientHealth:
+
+    def _health(self):
+        clock = FakeClock()
+        return ClientHealth(cooldown_seconds=600, clock=clock), clock
+
+    def test_all_clients_healthy_by_default(self):
+        health, _ = self._health()
+        healthy, cooled = health.partition(CLIENTS)
+        assert _names(healthy) == ["android_vr", "ios", "android"] and cooled == []
+
+    def test_blocked_client_moves_last_others_keep_order(self):
+        health, _ = self._health()
+        health.mark_blocked("android_vr")
+        healthy, cooled = health.partition(CLIENTS)
+        assert _names(healthy) == ["ios", "android"]
+        assert _names(cooled) == ["android_vr"]
+
+    def test_cooldown_expires(self):
+        health, clock = self._health()
+        health.mark_blocked("ios")
+        clock.now += 599
+        assert _names(health.partition(CLIENTS)[1]) == ["ios"]
+        clock.now += 2
+        assert health.partition(CLIENTS)[1] == []
+
+    def test_mark_ok_clears_cooldown(self):
+        health, _ = self._health()
+        health.mark_blocked("ios")
+        health.mark_ok("ios")
+        assert health.partition(CLIENTS)[1] == []
+
+    def test_marking_again_extends_the_cooldown(self):
+        health, clock = self._health()
+        health.mark_blocked("ios")
+        clock.now += 500
+        health.mark_blocked("ios")
+        clock.now += 500
+        assert _names(health.partition(CLIENTS)[1]) == ["ios"]
+
+    def test_reset_clears_everything(self):
+        health, _ = self._health()
+        for c in CLIENTS:
+            health.mark_blocked(c.name)
+        health.reset()
+        assert health.partition(CLIENTS)[1] == []
+
+    @pytest.mark.parametrize("cooldown", [0, -5])
+    def test_invalid_cooldown_is_a_contract_violation(self, cooldown):
+        with pytest.raises(ValueError):
+            ClientHealth(cooldown_seconds=cooldown)
+
+    def test_concurrent_use_is_safe(self):
+        health = ClientHealth()
+        errors = []
+
+        def worker(i):
+            try:
+                for _ in range(200):
+                    health.mark_blocked(CLIENTS[i % 3].name)
+                    health.partition(CLIENTS)
+                    health.mark_ok(CLIENTS[(i + 1) % 3].name)
+            except Exception as e:  # pragma: no cover - failure path
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert errors == []
+
+
+class TestClientCooldownOrchestration:
+
+    def _setup(self, **players):
+        clock = FakeClock()
+        health = ClientHealth(cooldown_seconds=600, clock=clock)
+        transport = FakeTransport({c.name: players.get(c.name, "player_bot_check.json")
+                                   for c in CLIENTS})
+        return transport, health, clock
+
+    def test_blocked_client_is_skipped_on_the_next_fetch(self):
+        transport, health, _ = self._setup(ios="player_ios_captioned.json")
+        first = fetch_transcript_native(VIDEO_ID, ["en"], transport, health=health)
+        assert first.clients_tried == ("android_vr", "ios")
+        transport.players["ios"] = ["player_ios_captioned.json"]
+        second = fetch_transcript_native(VIDEO_ID, ["en"], transport, health=health)
+        assert second.clients_tried == ("ios",)
+        assert len(transport.posts()) == 3
+
+    def test_cooled_client_is_retried_after_the_cooldown(self):
+        transport, health, clock = self._setup(ios="player_ios_captioned.json")
+        fetch_transcript_native(VIDEO_ID, ["en"], transport, health=health)
+        clock.now += 601
+        transport.players["android_vr"] = ["player_android_vr_captioned.json"]
+        result = fetch_transcript_native(VIDEO_ID, ["en"], transport, health=health)
+        assert result.client == "android_vr"
+        assert result.clients_tried == ("android_vr",)
+
+    def test_success_clears_the_cooldown_of_a_last_resort_client(self):
+        transport, health, _ = self._setup()
+        for c in CLIENTS:
+            health.mark_blocked(c.name)
+        transport.players["ios"] = "player_ios_captioned.json"
+        result = fetch_transcript_native(VIDEO_ID, ["en"], transport, health=health)
+        assert result.clients_tried == ("android_vr", "ios")
+        assert _names(health.partition(CLIENTS)[1]) == ["android_vr", "android"]
+
+    def test_all_cooled_clients_are_still_tried_in_original_order(self):
+        transport, health, _ = self._setup()
+        for c in CLIENTS:
+            health.mark_blocked(c.name)
+        with pytest.raises(YouTubeIpBlocked) as info:
+            fetch_transcript_native(VIDEO_ID, ["en"], transport, health=health)
+        assert "clients tried: android_vr, ios, android" in str(info.value)
+
+    def test_po_token_block_starts_a_cooldown(self):
+        raw = load_player("player_ios_captioned.json")
+        for track in raw["captions"]["playerCaptionsTracklistRenderer"]["captionTracks"]:
+            track["baseUrl"] += "&exp=xpe"
+        transport, health, _ = self._setup(
+            android_vr=HttpResponse(200, json.dumps(raw).encode()), ios="player_ios_captioned.json")
+        fetch_transcript_native(VIDEO_ID, ["en"], transport, health=health)
+        assert _names(health.partition(CLIENTS)[1]) == ["android_vr"]
+
+    @pytest.mark.parametrize("player", [HttpResponse(503, b""), "player_unavailable.json"])
+    def test_non_block_failures_never_start_a_cooldown(self, player):
+        transport, health, _ = self._setup(android_vr=player)
+        with pytest.raises((TransientRequestFailed, VideoUnavailable)):
+            fetch_transcript_native(VIDEO_ID, ["en"], transport, health=health)
+        assert health.partition(CLIENTS)[1] == []
+
+    def test_shared_health_is_used_by_default(self):
+        transport = FakeTransport(_players_for(ios="player_ios_captioned.json"))
+        fetch_transcript_native(VIDEO_ID, ["en"], transport)
+        assert _names(innertube.HEALTH.partition(CLIENTS)[1]) == ["android_vr"]
+
+
+def _players_for(**by_client) -> dict:
+    return {c.name: by_client.get(c.name, "player_bot_check.json") for c in CLIENTS}
 
 
 # -- Real transport (local HTTP server) ---------------------------------------
