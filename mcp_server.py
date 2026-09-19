@@ -16,49 +16,22 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 import mcp.types as types
 
+from yt_errors import INVALID_URL, from_library_exception
 from yt_transcript import (
     extract_video_id, fetch_metadata, fetch_transcript_with_retry,
     clean_text, raw_text, load_from_cache, save_to_cache,
-    MAX_RETRIES, RETRY_DELAY_SECONDS, _is_retryable,
+    MAX_RETRIES, RETRY_DELAY_SECONDS,
 )
 
 server = Server("yt-transcript")
 
 _EM_DASH = "\u2014"
 
-# -- Error codes (CONTRACTS.md section 1) -------------------------------------
+# -- Warning codes (CONTRACTS.md section 7) ----------------------------------
+# Error codes live in yt_errors (CONTRACTS.md section 1).
 
-INVALID_URL = "INVALID_URL"
-TRANSCRIPT_NOT_AVAILABLE = "TRANSCRIPT_NOT_AVAILABLE"
-LANGUAGE_NOT_AVAILABLE = "LANGUAGE_NOT_AVAILABLE"
-RATE_LIMITED = "RATE_LIMITED"
-YOUTUBE_IP_BLOCKED = "YOUTUBE_IP_BLOCKED"
-VIDEO_UNAVAILABLE = "VIDEO_UNAVAILABLE"
-PO_TOKEN_REQUIRED = "PO_TOKEN_REQUIRED"
 METADATA_FETCH_FAILED = "METADATA_FETCH_FAILED"
 CACHE_WRITE_FAILED = "CACHE_WRITE_FAILED"
-
-_EXCEPTION_CODE_MAP = {
-    "TranscriptsDisabled": TRANSCRIPT_NOT_AVAILABLE,
-    "NoTranscriptFound": LANGUAGE_NOT_AVAILABLE,
-    "VideoUnavailable": VIDEO_UNAVAILABLE,
-    "VideoUnplayable": VIDEO_UNAVAILABLE,
-    "InvalidVideoId": INVALID_URL,
-    "AgeRestricted": VIDEO_UNAVAILABLE,
-    "IpBlocked": YOUTUBE_IP_BLOCKED,
-    "RequestBlocked": YOUTUBE_IP_BLOCKED,
-    "PoTokenRequired": PO_TOKEN_REQUIRED,
-    "NotTranslatable": LANGUAGE_NOT_AVAILABLE,
-    "TranslationLanguageNotAvailable": LANGUAGE_NOT_AVAILABLE,
-    "YouTubeRequestFailed": RATE_LIMITED,
-    "YouTubeDataUnparsable": RATE_LIMITED,
-    "FailedToCreateConsentCookie": RATE_LIMITED,
-    "CookieError": RATE_LIMITED,
-    "CookieInvalid": RATE_LIMITED,
-    "CookiePathInvalid": RATE_LIMITED,
-    "CouldNotRetrieveTranscript": RATE_LIMITED,
-    "YouTubeTranscriptApiException": RATE_LIMITED,
-}
 
 # -- Language validation ------------------------------------------------------
 
@@ -124,25 +97,10 @@ def _build_metadata_warnings(meta_fields: dict, meta_sources: dict) -> list[dict
     return warnings
 
 def _classify_exception(e: Exception) -> tuple[str, str, int]:
-    cls = type(e).__name__
-    attempts = getattr(e, "actual_attempts", 1)
-    retries = max(0, attempts - 1)
-    code = _EXCEPTION_CODE_MAP.get(cls)
-    if code:
-        is_transient = _is_retryable(e)
-        return code, str(e) or cls, retries if is_transient else 0
-    msg = str(e).lower()
-    if "disabled" in msg:
-        return TRANSCRIPT_NOT_AVAILABLE, str(e), 0
-    if "unavailable" in msg or "private" in msg or "no longer available" in msg:
-        return VIDEO_UNAVAILABLE, str(e), 0
-    if "po token" in msg:
-        return PO_TOKEN_REQUIRED, str(e), 0
-    if "blocked" in msg:
-        return YOUTUBE_IP_BLOCKED, str(e), 0
-    if "429" in msg:
-        return RATE_LIMITED, str(e), retries
-    return RATE_LIMITED, f"Request failed after {attempts} attempts: {e}", 0
+    """Return (error_code, message, retry_count) for any exception."""
+    err = from_library_exception(e)
+    retries = max(0, err.actual_attempts - 1) if err.retryable else 0
+    return err.code, str(err), retries
 
 def _error_response(error_code: str, message: str, video_id: str | None,
                      url: str, retry_count: int, fallback_attempted: bool,
@@ -234,11 +192,10 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             retry_count = attempts - 1
         except Exception as e:
             dur = round(time.monotonic() - fetch_start, 2)
-            fallback_attempted = getattr(e, "fallback_attempted", False)
-            error_code, error_msg, err_retries = _classify_exception(e)
-            retryable = _is_retryable(e)
+            err = from_library_exception(e)
+            error_code, error_msg, err_retries = _classify_exception(err)
             resp = _error_response(error_code, error_msg, video_id, url,
-                                   err_retries, fallback_attempted, dur, retryable)
+                                   err_retries, err.fallback_attempted, dur, err.retryable)
             return [types.TextContent(type="text", text=_format_error(resp, fmt))]
 
         try:

@@ -5,19 +5,53 @@ are both derived from this document. Any change to behavior starts here.
 
 ---
 
-## 1. Exception Classification
+## 1. Error Classification
 
-Complete mapping of `youtube_transcript_api._errors` to MCP error codes.
-Classification is by exception class name. Message parsing is a last-resort
-fallback for unknown generic exceptions only.
+### Typed errors
+
+Every transcript failure is a `TranscriptError` (module `yt_errors`). The
+public error codes below are the contract; the backend that raised the failure
+is an implementation detail. A `TranscriptError` carries:
+
+| Attribute            | Meaning                                                    |
+|----------------------|------------------------------------------------------------|
+| `code`               | Public MCP error code (stable across backends)             |
+| `retryable`          | Whether retrying may help                                  |
+| `actual_attempts`    | Fetch attempts made before giving up (1 when never retried) |
+| `fallback_attempted` | A language fallback track was selected before the failure  |
+| `http_status`        | Upstream HTTP status when known, otherwise `null`          |
+
+| Error type              | MCP error code           | Retryable |
+|-------------------------|--------------------------|-----------|
+| TranscriptNotAvailable  | TRANSCRIPT_NOT_AVAILABLE | no        |
+| LanguageNotAvailable    | LANGUAGE_NOT_AVAILABLE   | no        |
+| VideoUnavailable        | VIDEO_UNAVAILABLE        | no        |
+| InvalidVideoIdError     | INVALID_URL              | no        |
+| YouTubeIpBlocked        | YOUTUBE_IP_BLOCKED       | no        |
+| PoTokenRequired         | PO_TOKEN_REQUIRED        | no        |
+| TransientRequestFailed  | RATE_LIMITED             | yes       |
+| UpstreamFailure         | RATE_LIMITED             | no        |
+
+`UpstreamFailure` is the catch-all for anything unclassified.
+
+### Upstream adapter (interim)
+
+Until the native InnerTube backend replaces `youtube-transcript-api`, the
+adapter `from_library_exception` converts the library's exceptions into typed
+errors. Classification is by exception class name. Message parsing is a
+last-resort fallback for unknown generic exceptions only. The adapter and this
+table are deleted together with the library dependency; the public codes and
+the type table above do not change.
 
 ### Retry policy
 
-**Allowlist**: only explicitly listed transient errors are retried.
-Everything else raises immediately on first attempt. Unknown/unrecognized
-exceptions are treated as non-retryable.
+**Allowlist**: only `TransientRequestFailed` is retried. Everything else
+raises immediately on first attempt. Unknown/unrecognized exceptions are
+treated as non-retryable.
 
 ### Permanent (non-retryable)
+
+Upstream exception class to MCP error code:
 
 | Exception class                   | MCP error code           |
 |-----------------------------------|--------------------------|
@@ -49,7 +83,8 @@ All of the above are non-retryable. Only the transient list below is retried.
 |------------------------|----------------|-------------|
 | YouTubeRequestFailed   | RATE_LIMITED   | 2 (3 total) |
 
-No other exception type is retried, including unknown/generic exceptions.
+Adapts to `TransientRequestFailed`. No other exception type is retried,
+including unknown/generic exceptions.
 
 ### Internal
 
@@ -58,6 +93,18 @@ No other exception type is retried, including unknown/generic exceptions.
 | URL parse failure         | INVALID_URL                               |
 | Non-YouTube host          | INVALID_URL                               |
 | All metadata sources fail | METADATA_FETCH_FAILED (warning, not error) |
+
+### Pending: native backend (not in effect)
+
+These rules take effect when the native InnerTube backend replaces
+`youtube-transcript-api`. They cannot apply earlier because the library does
+not expose HTTP status. Until then, the behavior above is authoritative.
+
+- HTTP 429 maps to `RATE_LIMITED` with `retryable: true` (the library reports
+  it as `IpBlocked`, which is `YOUTUBE_IP_BLOCKED`, non-retryable).
+- Retry only 5xx, timeouts, and connection errors. Other 4xx statuses (for
+  example 403, 404) are not retried.
+- Errors expose `http_status` when the failure came from an HTTP response.
 
 ---
 
