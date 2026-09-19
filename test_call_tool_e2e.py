@@ -407,6 +407,65 @@ class TestErrorEnvelope:
                              "retryable"}
 
 
+class TestMcpErrorFlag:
+    """Contract errors are MCP tool errors (isError) that still carry the JSON payload."""
+
+    @pytest.mark.parametrize("arguments", [
+        {"url": "https://example.com/x"},
+        {"url": "not a url", "format": "markdown"},
+    ])
+    def test_invalid_url_sets_is_error(self, tmp_path, arguments):
+        with _env(tmp_path):
+            result = call(arguments)
+        assert result.isError is True
+
+    @pytest.mark.parametrize("error", [
+        TranscriptNotAvailable("none"), VideoUnavailable("gone"), YouTubeIpBlocked("blocked"),
+        PoTokenRequired("token"), UpstreamFailure("boom"),
+        TransientRequestFailed("HTTP 503", http_status=503), RuntimeError("bug"),
+    ])
+    def test_every_fetch_failure_sets_is_error(self, tmp_path, error):
+        with _env(tmp_path, fetch_side_effect=error):
+            result = call({"url": URL})
+        assert result.isError is True
+        body = json.loads(result.content[0].text)
+        assert body["is_error"] is True and body["error_code"]
+
+    def test_payload_survives_intact(self, tmp_path):
+        with _env(tmp_path, fetch_side_effect=VideoUnavailable("gone")):
+            result = call({"url": URL})
+        assert len(result.content) == 1 and result.content[0].type == "text"
+        body = json.loads(result.content[0].text)
+        assert body["error_code"] == "VIDEO_UNAVAILABLE"
+        assert set(body) == {"is_error", "error_code", "error_message", "video_id", "url",
+                             "retry_count", "fallback_attempted", "fetch_duration_seconds",
+                             "retryable"}
+
+    def test_markdown_error_sets_is_error(self, tmp_path):
+        with _env(tmp_path, fetch_side_effect=VideoUnavailable("gone")):
+            result = call({"url": URL, "format": "markdown"})
+        assert result.isError is True
+        assert result.content[0].text.startswith("# Error: VIDEO_UNAVAILABLE")
+
+    @pytest.mark.parametrize("arguments", [
+        {"url": URL}, {"url": URL, "output": "both"}, {"url": URL, "format": "markdown"}])
+    def test_success_is_not_an_error(self, tmp_path, arguments):
+        with _env(tmp_path):
+            assert call(arguments).isError is False
+
+    def test_failed_call_does_not_poison_the_next_one(self, tmp_path):
+        with _env(tmp_path, fetch_side_effect=[VideoUnavailable("gone"),
+                                               (SEGMENTS, "en", False, False)]):
+            assert call({"url": URL}).isError is True
+            assert call({"url": URL}).isError is False
+
+    def test_server_reports_the_package_version_not_the_sdk_version(self):
+        import importlib.metadata
+        reported = mcp_server.server.create_initialization_options().server_version
+        assert reported == importlib.metadata.version("ytfetch-mcp")
+        assert reported != importlib.metadata.version("mcp")
+
+
 # -- Metadata provider failures -----------------------------------------------
 
 class TestMetadataFailures:
@@ -687,14 +746,6 @@ class TestConcurrency:
 class TestKnownGaps:
     """Strict xfails: each flips to a hard failure the moment the gap is fixed,
     forcing the marker to be removed and the gap closed in the ticket."""
-
-    @pytest.mark.xfail(strict=True, reason=(
-        "Roadmap says errors return isError; server currently returns contract errors "
-        "with isError=False and only flags is_error inside the JSON payload."))
-    def test_contract_errors_set_mcp_is_error(self, tmp_path):
-        with _env(tmp_path, fetch_side_effect=TranscriptNotAvailable("no captions")):
-            result = call({"url": URL})
-        assert result.isError is True
 
     @pytest.mark.xfail(strict=True, reason=(
         "Deferred: manual `published` override is not validated against YYYY-MM-DD."))

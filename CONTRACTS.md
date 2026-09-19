@@ -195,6 +195,15 @@ Compact serialization: `json.dumps(response, ensure_ascii=False, separators=(","
 - `fallback_attempted` is true when a language fallback was tried, even if it failed.
 - `fetch_duration_seconds` present in ALL error responses including INVALID_URL.
 - Error responses respect `format` param (JSON or markdown).
+- Every contract error is delivered as an MCP tool error: the result has
+  `isError: true` and its single text content is the error payload above (JSON
+  or markdown). Successful fetches have `isError: false`. The `is_error` field
+  in the JSON payload stays for clients that only read the text.
+- Arguments that violate the tool schema (missing `url`, unknown argument, wrong
+  type or enum value) are rejected by the MCP SDK before the tool runs, as
+  `isError: true` results with a plain-text message, not this JSON payload.
+  This needs an SDK that validates input, which is why `pyproject.toml` sets a
+  minimum `mcp` version.
 
 ---
 
