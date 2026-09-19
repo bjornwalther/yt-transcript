@@ -10,81 +10,68 @@ are both derived from this document. Any change to behavior starts here.
 ### Typed errors
 
 Every transcript failure is a `TranscriptError` (module `yt_errors`). The
-public error codes below are the contract; the backend that raised the failure
-is an implementation detail. A `TranscriptError` carries:
+public error codes below are the contract. A `TranscriptError` carries:
 
 | Attribute            | Meaning                                                    |
 |----------------------|------------------------------------------------------------|
-| `code`               | Public MCP error code (stable across backends)             |
+| `code`               | Public MCP error code                                      |
 | `retryable`          | Whether retrying may help                                  |
 | `actual_attempts`    | Fetch attempts made before giving up (1 when never retried) |
 | `fallback_attempted` | A language fallback track was selected before the failure  |
-| `http_status`        | Upstream HTTP status when known, otherwise `null`          |
+| `http_status`        | Upstream HTTP status when known, otherwise `null`. Internal: not part of the JSON error payload; the status appears in `error_message`. |
 
-| Error type              | MCP error code           | Retryable |
-|-------------------------|--------------------------|-----------|
-| TranscriptNotAvailable  | TRANSCRIPT_NOT_AVAILABLE | no        |
-| LanguageNotAvailable    | LANGUAGE_NOT_AVAILABLE   | no        |
-| VideoUnavailable        | VIDEO_UNAVAILABLE        | no        |
-| InvalidVideoIdError     | INVALID_URL              | no        |
-| YouTubeIpBlocked        | YOUTUBE_IP_BLOCKED       | no        |
-| PoTokenRequired         | PO_TOKEN_REQUIRED        | no        |
-| TransientRequestFailed  | RATE_LIMITED             | yes       |
-| UpstreamFailure         | RATE_LIMITED             | no        |
+| Error type              | MCP error code           | Retryable | Raised when                                              |
+|-------------------------|--------------------------|-----------|----------------------------------------------------------|
+| TranscriptNotAvailable  | TRANSCRIPT_NOT_AVAILABLE | no        | The video has no caption tracks                          |
+| LanguageNotAvailable    | LANGUAGE_NOT_AVAILABLE   | no        | Reserved. Not raised: any available track is a fallback  |
+| VideoUnavailable        | VIDEO_UNAVAILABLE        | no        | Not playable: unavailable, private, age-restricted, login required |
+| InvalidVideoIdError     | INVALID_URL              | no        | The video ID fails validation                            |
+| YouTubeIpBlocked        | YOUTUBE_IP_BLOCKED       | no        | YouTube bot check on every client tried                  |
+| PoTokenRequired         | PO_TOKEN_REQUIRED        | no        | Every client tried needs a PO token                      |
+| TransientRequestFailed  | RATE_LIMITED             | yes       | HTTP 429, 5xx, timeout, or connection error              |
+| UpstreamFailure         | RATE_LIMITED             | no        | Any other failure, including unexpected exceptions       |
 
-`UpstreamFailure` is the catch-all for anything unclassified.
+### Backend
 
-### Upstream adapter (interim)
+Transcripts are fetched directly from YouTube's InnerTube `/player` endpoint
+and the caption endpoint (module `innertube`, standard library only).
 
-Until the native InnerTube backend replaces `youtube-transcript-api`, the
-adapter `from_library_exception` converts the library's exceptions into typed
-errors. Classification is by exception class name. Message parsing is a
-last-resort fallback for unknown generic exceptions only. The adapter and this
-table are deleted together with the library dependency; the public codes and
-the type table above do not change.
+- Clients are tried in order `android_vr`, `ios`, `android`. The chain advances
+  only on client-specific blocks: a bot check (`YOUTUBE_IP_BLOCKED`) or a
+  required PO token (`PO_TOKEN_REQUIRED`). Any other failure ends the fetch.
+  When every client is blocked, the last error is raised and its message lists
+  the clients tried.
+- A caption track whose URL carries `exp=xpe`, or a 200 caption response with an
+  empty body (how YouTube answers a request missing a required token), is
+  `PO_TOKEN_REQUIRED`.
+- Track selection: requested languages in priority order, manual before
+  generated within a language. If none match, the first manual track (else the
+  first generated) is used and `language_fallback` is reported. Language codes
+  match exactly (`en` does not match `en-US`).
+- `fallback_attempted` is true on any error raised after a language fallback
+  track was selected, including when downloading that track fails.
+- Caption URLs are followed only if they are `https` on `youtube.com` or a
+  subdomain; other tracks are ignored.
+- `&fmt=srv3` is removed from caption URLs so YouTube answers in the simple
+  `<transcript><text>` format. The srv3 format is still parsed as a fallback.
+- Caption segments with no text are dropped, so `segment_count` can be lower
+  than the number of caption elements. A caption element without a start time,
+  or with a negative or non-finite time, fails the fetch.
+
+### HTTP status mapping
+
+| Status                                   | Error                  |
+|------------------------------------------|------------------------|
+| 2xx                                      | success                |
+| 429, 5xx, timeout, connection error      | TransientRequestFailed |
+| any other status                         | UpstreamFailure        |
 
 ### Retry policy
 
-**Allowlist**: only `TransientRequestFailed` is retried. Everything else
-raises immediately on first attempt. Unknown/unrecognized exceptions are
-treated as non-retryable.
-
-### Permanent (non-retryable)
-
-Upstream exception class to MCP error code:
-
-| Exception class                   | MCP error code           |
-|-----------------------------------|--------------------------|
-| TranscriptsDisabled               | TRANSCRIPT_NOT_AVAILABLE |
-| NoTranscriptFound                 | LANGUAGE_NOT_AVAILABLE   |
-| VideoUnavailable                  | VIDEO_UNAVAILABLE        |
-| VideoUnplayable                   | VIDEO_UNAVAILABLE        |
-| InvalidVideoId                    | INVALID_URL              |
-| AgeRestricted                     | VIDEO_UNAVAILABLE        |
-| IpBlocked                         | YOUTUBE_IP_BLOCKED       |
-| RequestBlocked                    | YOUTUBE_IP_BLOCKED       |
-| PoTokenRequired                   | PO_TOKEN_REQUIRED        |
-| NotTranslatable                   | LANGUAGE_NOT_AVAILABLE   |
-| TranslationLanguageNotAvailable   | LANGUAGE_NOT_AVAILABLE   |
-| YouTubeDataUnparsable             | RATE_LIMITED             |
-| FailedToCreateConsentCookie       | RATE_LIMITED             |
-| CookieError                       | RATE_LIMITED             |
-| CookieInvalid                     | RATE_LIMITED             |
-| CookiePathInvalid                 | RATE_LIMITED             |
-| CouldNotRetrieveTranscript        | RATE_LIMITED             |
-| YouTubeTranscriptApiException     | RATE_LIMITED             |
-| (unknown Exception)               | RATE_LIMITED             |
-
-All of the above are non-retryable. Only the transient list below is retried.
-
-### Transient (retryable)
-
-| Exception class         | MCP error code | Max retries |
-|------------------------|----------------|-------------|
-| YouTubeRequestFailed   | RATE_LIMITED   | 2 (3 total) |
-
-Adapts to `TransientRequestFailed`. No other exception type is retried,
-including unknown/generic exceptions.
+**Allowlist**: only `TransientRequestFailed` is retried, up to 3 attempts in
+total with a fixed delay. A retry repeats the whole fetch, including the client
+chain. Every other error, and any unexpected exception (classified as
+`UpstreamFailure`), raises immediately on the first attempt.
 
 ### Internal
 
@@ -94,34 +81,12 @@ including unknown/generic exceptions.
 | Non-YouTube host          | INVALID_URL                               |
 | All metadata sources fail | METADATA_FETCH_FAILED (warning, not error) |
 
-### Pending: native backend (not in effect)
+### Logging
 
-These rules take effect when the native InnerTube backend replaces
-`youtube-transcript-api`. They cannot apply earlier because the library does
-not expose HTTP status. Until then, the behavior above is authoritative.
-
-- HTTP 429 maps to `RATE_LIMITED` with `retryable: true` (the library reports
-  it as `IpBlocked`, which is `YOUTUBE_IP_BLOCKED`, non-retryable).
-- Retry only 5xx, timeouts, and connection errors. Other 4xx statuses (for
-  example 403, 404) are not retried.
-- Errors expose `http_status` when the failure came from an HTTP response.
-- Clients are tried in order `android_vr`, `ios`, `android`. The chain advances
-  only on client-specific blocks: a bot check (`YOUTUBE_IP_BLOCKED`) or a
-  required PO token (`PO_TOKEN_REQUIRED`). Any other failure ends the fetch.
-  When every client is blocked, the last error is raised and its message lists
-  the clients tried.
-- A caption track whose URL carries `exp=xpe`, or a 200 caption response with an
-  empty body (how YouTube answers a request missing a required token), is
-  `PO_TOKEN_REQUIRED`.
-- `fallback_attempted` is true on any error raised after a language fallback
-  track was selected, including when downloading that track fails.
-- Caption URLs are followed only if they are `https` on `youtube.com` or a
-  subdomain; other tracks are ignored.
-- `&fmt=srv3` is removed from caption URLs so YouTube answers in the simple
-  `<transcript><text>` format, as `youtube-transcript-api` does. The srv3
-  format is still parsed as a fallback.
-- Caption segments with no text are dropped, so `segment_count` may differ from
-  the library for videos that contain empty caption elements.
+The server logs to stderr through the `ytfetch` logger (stdout carries the MCP
+protocol). Default level is `WARNING`; set `YTFETCH_LOG_LEVEL=INFO` to log the
+client that served each fetch and the attempt count. Falling back from one
+client to another is always logged at `WARNING`.
 
 ---
 
@@ -279,7 +244,9 @@ Language codes: max 20, each 1-10 chars, `[a-zA-Z0-9-]` only.
 | LANGUAGE_FALLBACK     | Returned language not in requested list           |
 | AUTO_GENERATED        | `is_generated` is true                            |
 | CACHE_WRITE_FAILED    | Cache directory unwritable or disk full            |
+| CLIENT_FALLBACK       | A later client served the fetch because an earlier one was blocked. Fresh fetches only; never present on cache hits |
 
 Warnings are generated AFTER cache/fetch merge from the final state.
 A cached response with missing metadata produces the same warnings as
-the original fresh response.
+the original fresh response. The exceptions are `CLIENT_FALLBACK` and
+`CACHE_WRITE_FAILED`, which describe the fetch itself and are absent on cache hits.

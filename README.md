@@ -150,11 +150,11 @@ Every error returns a structured response with a machine-readable code and a `re
 |-----------|---------|----------|
 | `INVALID_URL` | Not a YouTube URL or malformed video ID | No |
 | `TRANSCRIPT_NOT_AVAILABLE` | Transcripts disabled for this video | No |
-| `LANGUAGE_NOT_AVAILABLE` | No transcript in requested languages | No |
+| `LANGUAGE_NOT_AVAILABLE` | Reserved, not currently returned: if none of your languages exist, another available track is used and `LANGUAGE_FALLBACK` is warned | No |
 | `VIDEO_UNAVAILABLE` | Video unavailable, private, age-restricted, or unplayable | No |
 | `YOUTUBE_IP_BLOCKED` | YouTube is blocking your IP | No |
 | `PO_TOKEN_REQUIRED` | Video requires Proof-of-Origin token | No |
-| `RATE_LIMITED` | YouTube rate limit (429) | Yes |
+| `RATE_LIMITED` | YouTube rate limit (429), server error, or timeout. Also used for unclassified failures: check `retryable` | Yes, unless `retryable` is `false` |
 
 ---
 
@@ -165,7 +165,13 @@ Every response includes provenance so you know exactly where the data comes from
 - **`caption_type`**: `manual`, `auto-generated`, or `unknown`
 - **`metadata_sources`**: per-field tracking (`{"title": "oembed", "published": "pytubefix"}`)
 - **`content_hash`**: SHA256 of the segments array for reproducibility
-- **`warnings`**: `AUTO_GENERATED` (speech recognition, may contain errors), `LANGUAGE_FALLBACK` (got a different language than requested), `METADATA_FETCH_FAILED` (some metadata unavailable)
+- **`warnings`**: `AUTO_GENERATED` (speech recognition, may contain errors), `LANGUAGE_FALLBACK` (got a different language than requested), `METADATA_FETCH_FAILED` (some metadata unavailable), `CLIENT_FALLBACK` (an earlier YouTube client was blocked and a later one served the request)
+
+---
+
+## Logging
+
+The server logs to stderr (stdout carries the MCP protocol). Default level is `WARNING`, which includes client fallbacks and retries. Set `YTFETCH_LOG_LEVEL=INFO` to also log which YouTube client served each fetch.
 
 ---
 

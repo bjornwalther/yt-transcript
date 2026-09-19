@@ -12,6 +12,7 @@ the chain.
 
 import html
 import json
+import logging
 import math
 import re
 import socket
@@ -26,6 +27,8 @@ from yt_errors import (
     InvalidVideoIdError, PoTokenRequired, TranscriptError, TranscriptNotAvailable,
     TransientRequestFailed, UpstreamFailure, VideoUnavailable, YouTubeIpBlocked,
 )
+
+log = logging.getLogger("ytfetch.innertube")
 
 PLAYER_URL = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false"
 REQUEST_TIMEOUT_SECONDS = 10
@@ -361,10 +364,15 @@ def fetch_transcript_native(video_id: str, languages: list[str],
         except _ADVANCE_ON as e:
             e.fallback_attempted = e.fallback_attempted or fallback_used
             last_error = e
+            log.warning("Client %s blocked for %s (%s: %s); trying next client.",
+                        client.name, video_id, type(e).__name__, e)
             continue
         except TranscriptError as e:
             e.fallback_attempted = e.fallback_attempted or fallback_used
             raise
+        log.info("Fetched %s via %s (language=%s, fallback=%s, clients tried: %s).",
+                 video_id, client.name, selection.track.language_code,
+                 selection.fallback_used, ", ".join(tried))
         return NativeTranscript(segments=segments, language_code=selection.track.language_code,
                                 is_generated=selection.track.is_generated,
                                 fallback_used=selection.fallback_used, client=client.name,

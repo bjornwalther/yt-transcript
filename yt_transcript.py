@@ -1,31 +1,15 @@
 #!/usr/bin/env python3
 """YouTube transcript fetcher. CLI + shared logic for MCP server."""
 
-import argparse, hashlib, json, math, re, sys, time
+import argparse, hashlib, json, logging, math, re, sys, time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 
-from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._errors import NoTranscriptFound, TranscriptsDisabled
-
-from yt_errors import from_library_exception
-
-_OPTIONAL_ERRORS = {}
-for _name in ("PoTokenRequired", "VideoUnavailable", "VideoUnplayable",
-              "InvalidVideoId", "AgeRestricted", "IpBlocked", "RequestBlocked",
-              "NotTranslatable", "TranslationLanguageNotAvailable",
-              "YouTubeRequestFailed", "YouTubeDataUnparsable",
-              "FailedToCreateConsentCookie", "CookieError", "CookieInvalid",
-              "CookiePathInvalid", "CouldNotRetrieveTranscript",
-              "YouTubeTranscriptApiException"):
-    try:
-        _mod = __import__("youtube_transcript_api._errors", fromlist=[_name])
-        _OPTIONAL_ERRORS[_name] = getattr(_mod, _name)
-    except (ImportError, AttributeError):
-        pass
+import innertube
+from yt_errors import TranscriptError, as_transcript_error
 
 try:
     from pytubefix import YouTube
@@ -33,6 +17,8 @@ except ImportError:
     YouTube = None
 
 _EM_DASH = "\u2014"
+
+log = logging.getLogger("ytfetch")
 
 CACHE_DIR = Path.home() / ".cache" / "yt-transcript"
 CACHE_VERSION = 2
@@ -43,10 +29,6 @@ _YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com",
 _VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _VALID_SOURCES = {"oembed", "pytubefix", "manual", "none"}
-
-
-def _is_retryable(exc: Exception) -> bool:
-    return from_library_exception(exc).retryable
 
 
 def extract_video_id(url: str) -> str:
@@ -217,40 +199,32 @@ def fetch_metadata(url: str) -> dict:
     return {"fields": fields, "sources": sources, "missing": missing, "complete": len(missing) == 0}
 
 
-def fetch_transcript(video_id: str, languages: list) -> tuple:
-    api = YouTubeTranscriptApi()
-    tl = api.list(video_id)
-    fallback_used = False
-    try:
-        t = tl.find_transcript(languages)
-    except NoTranscriptFound:
-        fallback_used = True
-        try:
-            t = tl.find_transcript([x.language_code for x in tl])
-        except Exception as e:
-            e.fallback_attempted = True
-            raise
-    fetched = t.fetch()
-    segments = [{"text": s.text, "start": s.start, "duration": s.duration} for s in fetched]
-    return segments, t.language_code, t.is_generated, fallback_used
+def fetch_transcript(video_id: str, languages: list) -> innertube.NativeTranscript:
+    """One fetch attempt through the client chain. Raises TranscriptError."""
+    return innertube.fetch_transcript_native(
+        video_id, languages, transport=innertube.urllib_transport)
 
 
 def fetch_transcript_with_retry(video_id: str, languages: list) -> tuple:
-    """Fetch with retry. Raises TranscriptError; only retryable errors are retried."""
+    """Fetch with retry. Returns (NativeTranscript, attempts). Raises TranscriptError.
+
+    Only retryable errors are retried (CONTRACTS.md section 1). Any exception that
+    is not already a TranscriptError is wrapped as a non-retryable UpstreamFailure.
+    """
     last_err = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            segs, lang, is_gen, fallback = fetch_transcript(video_id, languages)
-            return segs, lang, is_gen, fallback, attempt
+            return fetch_transcript(video_id, languages), attempt
         except Exception as e:
-            err = from_library_exception(e)
+            err = as_transcript_error(e)
             err.actual_attempts = attempt
             if not err.retryable:
                 raise err
+            log.warning("Attempt %d/%d for %s failed (retryable): %s",
+                        attempt, MAX_RETRIES, video_id, err)
             last_err = err
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_DELAY_SECONDS)
-    last_err.actual_attempts = MAX_RETRIES
     raise last_err
 
 
@@ -317,24 +291,14 @@ def main():
     else:
         meta = fetch_metadata(args.url)
         try:
-            segments, language, is_gen, fallback, attempts = fetch_transcript_with_retry(video_id, languages)
-            if attempts > 1:
-                notes.append(f"Retry succeeded (attempt {attempts}/{MAX_RETRIES}).")
-            if fallback:
-                notes.append(f"Language fallback: requested {languages}, got {language}.")
-        except Exception as e:
-            cls = type(e).__name__
-            if cls == "TranscriptsDisabled":
-                sys.exit("Error: Transcripts disabled for this video.")
-            if cls == "NoTranscriptFound":
-                sys.exit(f"Error: No transcript for languages {languages}.")
-            if cls == "PoTokenRequired":
-                sys.exit("Error: Video requires PO token. Cannot fetch without JS runtime.")
-            if cls == "AgeRestricted":
-                sys.exit("Error: Video is age-restricted. Cookie auth not supported.")
-            if cls in ("VideoUnavailable", "VideoUnplayable", "InvalidVideoId"):
-                sys.exit(f"Error: Video unavailable ({cls}).")
-            sys.exit(f"Error: {cls}: {e}")
+            result, attempts = fetch_transcript_with_retry(video_id, languages)
+        except TranscriptError as e:
+            sys.exit(f"Error: {e.code}: {e}")
+        segments, language, is_gen = result.segments, result.language_code, result.is_generated
+        if attempts > 1:
+            notes.append(f"Retry succeeded (attempt {attempts}/{MAX_RETRIES}).")
+        if result.fallback_used:
+            notes.append(f"Language fallback: requested {languages}, got {language}.")
         save_to_cache(video_id, segments, language, languages, meta, is_gen)
     fields = meta.get("fields", meta)
     if args.title:
