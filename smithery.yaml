@@ -8,4 +8,4 @@ startCommand:
     properties: {}
   commandFunction:
     |-
-    config => ({ command: 'uvx', args: ['--from', 'git+https://github.com/bjornwalther/yt-transcript', 'yt-transcript-mcp'] })
+    config => ({ command: 'uvx', args: ['ytfetch-mcp'] })

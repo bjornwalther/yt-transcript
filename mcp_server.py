@@ -7,7 +7,6 @@ Or run:   uv run mcp_server.py
 
 import asyncio
 import hashlib
-import importlib.metadata
 import json
 import logging
 import os
@@ -24,18 +23,10 @@ from yt_errors import INVALID_URL, as_transcript_error
 from yt_transcript import (
     extract_video_id, fetch_metadata, fetch_transcript_with_retry,
     clean_text, raw_text, load_from_cache, save_to_cache,
-    MAX_RETRIES, RETRY_DELAY_SECONDS,
+    MAX_RETRIES, RETRY_DELAY_SECONDS, package_version,
 )
 
-def _package_version() -> str:
-    """Installed package version, so MCP clients see ours and not the SDK's."""
-    try:
-        return importlib.metadata.version("ytfetch-mcp")
-    except importlib.metadata.PackageNotFoundError:
-        return "0+unknown"
-
-
-server = Server("yt-transcript", version=_package_version())
+server = Server("yt-transcript", version=package_version())
 log = logging.getLogger("ytfetch")
 
 
