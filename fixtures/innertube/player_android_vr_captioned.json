@@ -1,0 +1,103 @@
+{
+  "playabilityStatus": {
+    "status": "OK",
+    "playableInEmbed": true,
+    "miniplayer": {
+      "miniplayerRenderer": {
+        "playbackMode": "PLAYBACK_MODE_ALLOW"
+      }
+    },
+    "contextParams": "Q0FFU0FnZ0I="
+  },
+  "captions": {
+    "playerCaptionsTracklistRenderer": {
+      "captionTracks": [
+        {
+          "name": {
+            "runs": [
+              {
+                "text": "English"
+              }
+            ]
+          },
+          "vssId": ".en",
+          "languageCode": "en",
+          "isTranslatable": true,
+          "trackName": "",
+          "baseUrl": "https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en&kind=manual&fixture=android_vr&fmt=srv3"
+        },
+        {
+          "name": {
+            "runs": [
+              {
+                "text": "English (auto-generated)"
+              }
+            ]
+          },
+          "vssId": "a.en",
+          "languageCode": "en",
+          "kind": "asr",
+          "isTranslatable": true,
+          "trackName": "",
+          "baseUrl": "https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en&kind=asr&fixture=android_vr&fmt=srv3"
+        },
+        {
+          "name": {
+            "runs": [
+              {
+                "text": "German (Germany)"
+              }
+            ]
+          },
+          "vssId": ".de-DE",
+          "languageCode": "de-DE",
+          "isTranslatable": true,
+          "trackName": "",
+          "baseUrl": "https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=de-DE&kind=manual&fixture=android_vr&fmt=srv3"
+        },
+        {
+          "name": {
+            "runs": [
+              {
+                "text": "Japanese"
+              }
+            ]
+          },
+          "vssId": ".ja",
+          "languageCode": "ja",
+          "isTranslatable": true,
+          "trackName": "",
+          "baseUrl": "https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=ja&kind=manual&fixture=android_vr&fmt=srv3"
+        },
+        {
+          "name": {
+            "runs": [
+              {
+                "text": "Portuguese (Brazil)"
+              }
+            ]
+          },
+          "vssId": ".pt-BR",
+          "languageCode": "pt-BR",
+          "isTranslatable": true,
+          "trackName": "",
+          "baseUrl": "https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=pt-BR&kind=manual&fixture=android_vr&fmt=srv3"
+        },
+        {
+          "name": {
+            "runs": [
+              {
+                "text": "Spanish (Latin America)"
+              }
+            ]
+          },
+          "vssId": ".es-419",
+          "languageCode": "es-419",
+          "isTranslatable": true,
+          "trackName": "",
+          "baseUrl": "https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=es-419&kind=manual&fixture=android_vr&fmt=srv3"
+        }
+      ]
+    }
+  }
+}
